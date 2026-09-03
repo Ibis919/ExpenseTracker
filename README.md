@@ -1,5 +1,7 @@
 # 记账 · ExpenseTracker
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 一款 Android 原生记账应用：定预算、记流水、看统计，专注「这个月还能花多少」这一件事。纯本地存储，**零联网权限**，数据只属于你。
 
 ## 功能特性
@@ -75,6 +77,6 @@
 | v0.3.1 | CSV 导入，换机迁移 |
 | v0.3.2 | 列表滚动性能优化 |
 
-## 声明
+## 开源协议
 
-个人项目，暂未授权开源，保留所有权利。
+[MIT License](LICENSE) — 可自由使用、修改、分发、商用，仅需保留版权声明。
