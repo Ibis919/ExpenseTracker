@@ -36,6 +36,9 @@ interface ExpenseDao {
     @Query("SELECT * FROM expenses ORDER BY epochDay ASC, createdAt ASC")
     suspend fun getAllOnce(): List<ExpenseRecord>
 
+    @Query("SELECT * FROM expenses ORDER BY epochDay ASC, createdAt ASC")
+    fun observeAll(): Flow<List<ExpenseRecord>>
+
     @Insert
     suspend fun insert(record: ExpenseRecord)
 

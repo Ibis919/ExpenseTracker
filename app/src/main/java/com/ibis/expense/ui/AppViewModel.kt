@@ -16,6 +16,8 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,6 +67,13 @@ data class StatsState(
     val trend: List<MonthSpent>
 )
 
+data class SearchState(
+    val query: String,
+    val count: Int,
+    val totalCents: Long,
+    val days: List<DayGroup>
+)
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val db = Room.databaseBuilder(app, ExpenseDatabase::class.java, "expenses.db").build()
@@ -78,6 +87,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _lastBackup = MutableStateFlow<LocalDate?>(null)
     val lastBackup: StateFlow<LocalDate?> = _lastBackup.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    val searchState: StateFlow<SearchState?> = combine(_searchQuery, dao.observeAll()) { query, records ->
+        val q = query.trim()
+        if (q.isEmpty()) null else buildSearchState(q, records)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val homeState: StateFlow<HomeState?> = _month.flatMapLatest { month ->
@@ -272,6 +293,60 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 BudgetNotifier.notifyNearLimit(app, s.spentCents, s.budgetCents)
             }
         }
+    }
+
+    private fun buildSearchState(query: String, records: List<ExpenseRecord>): SearchState {
+        val terms = query.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val dateCache = HashMap<Long, List<String>>(32)
+        val matched = records.filter { r ->
+            val dateStrings = dateCache.getOrPut(r.epochDay) { buildDateStrings(r.epochDay) }
+            terms.all { term ->
+                val tl = term.lowercase()
+                val termCents = parseAmountToCents(term)
+                r.note.lowercase().contains(tl) ||
+                    r.category.lowercase().contains(tl) ||
+                    (termCents != null && r.amountCents == termCents) ||
+                    dateStrings.any { it.contains(term) }
+            }
+        }
+        val days = matched.groupBy { it.epochDay }.map { (day, list) ->
+            DayGroup(
+                date = LocalDate.ofEpochDay(day),
+                dayTotalCents = list.sumOf { it.amountCents },
+                records = list.sortedByDescending { it.createdAt }.map {
+                    UiRecord(
+                        id = it.id,
+                        amountCents = it.amountCents,
+                        epochDay = it.epochDay,
+                        createdAt = it.createdAt,
+                        category = it.category,
+                        note = it.note,
+                        overBudget = false
+                    )
+                }
+            )
+        }.sortedByDescending { it.date }
+        return SearchState(
+            query = query,
+            count = matched.size,
+            totalCents = matched.sumOf { it.amountCents },
+            days = days
+        )
+    }
+
+    private fun buildDateStrings(epochDay: Long): List<String> {
+        val d = LocalDate.ofEpochDay(epochDay)
+        return listOf(
+            d.format(DateTimeFormatter.ISO_LOCAL_DATE),
+            d.format(DateTimeFormatter.ofPattern("yyyy年M月d日")),
+            d.format(DateTimeFormatter.ofPattern("M月d日")),
+            d.format(DateTimeFormatter.ofPattern("yyyy年M月")),
+            d.format(DateTimeFormatter.ofPattern("M月")),
+            d.format(DateTimeFormatter.ofPattern("d日")),
+            d.format(DateTimeFormatter.ofPattern("M-d")),
+            d.format(DateTimeFormatter.ofPattern("M.d")),
+            d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.CHINA)
+        )
     }
 
     override fun onCleared() {

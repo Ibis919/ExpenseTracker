@@ -33,9 +33,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -46,6 +50,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,9 +64,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -80,6 +89,8 @@ fun HomeScreen(
     onSettings: () -> Unit
 ) {
     val state = vm.homeState.collectAsState().value
+    val search = vm.searchState.collectAsState().value
+    val query = vm.searchQuery.collectAsState().value
     var openRowId by remember { mutableStateOf<Long?>(null) }
     Scaffold(
         topBar = {
@@ -93,65 +104,171 @@ fun HomeScreen(
             )
         }
     ) { padding ->
-        val s = state
-        if (s == null) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-        } else {
-            LazyColumn(
-                Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(horizontal = 16.dp)
-            ) {
-                item(key = "balance") { BalanceCard(s, onPrev = vm::previousMonth, onNext = vm::nextMonth) }
-                if (s.days.isEmpty()) {
-                    item(key = "empty") {
-                        Column(
-                            Modifier.fillMaxWidth().padding(top = 72.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text("🧾", fontSize = 52.sp)
-                            Spacer(Modifier.height(14.dp))
-                            Text(
-                                "本月暂无记录",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "点下方「记一笔」开始",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                            )
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            SearchField(value = query, onValueChange = vm::setSearchQuery)
+            val s = search
+            if (s != null) {
+                SearchResults(
+                    s,
+                    openRowId = openRowId,
+                    onOpenChange = { open -> openRowId = open },
+                    onDelete = { id ->
+                        openRowId = null
+                        vm.deleteRecord(id)
+                    },
+                    onRecordClick = onRecordClick
+                )
+            } else if (state != null) {
+                LazyColumn(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp)
+                ) {
+                    item(key = "balance") { BalanceCard(state, onPrev = vm::previousMonth, onNext = vm::nextMonth) }
+                    if (state.days.isEmpty()) {
+                        item(key = "empty") {
+                            Column(
+                                Modifier.fillMaxWidth().padding(top = 72.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("🧾", fontSize = 52.sp)
+                                Spacer(Modifier.height(14.dp))
+                                Text(
+                                    "本月暂无记录",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "点下方「记一笔」开始",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                )
+                            }
                         }
                     }
-                }
-                for (day in s.days) {
-                    item(key = "day-${day.date}") {
-                        DayHeader(day, Modifier.animateItem())
-                    }
-                    items(day.records, key = { it.id }) { record ->
-                        Box(Modifier.padding(bottom = 4.dp).animateItem()) {
-                            SwipeRecordRow(
-                                record = record,
-                                isOpen = openRowId == record.id,
-                                onOpenChange = { open ->
-                                    openRowId = if (open) record.id else null
-                                },
-                                onDelete = {
-                                    openRowId = null
-                                    vm.deleteRecord(record.id)
-                                },
-                                onClick = { onRecordClick(record) }
-                            )
+                    for (day in state.days) {
+                        item(key = "day-${day.date}") {
+                            DayHeader(day, Modifier.animateItem())
+                        }
+                        items(day.records, key = { it.id }) { record ->
+                            Box(Modifier.padding(bottom = 4.dp).animateItem()) {
+                                SwipeRecordRow(
+                                    record = record,
+                                    isOpen = openRowId == record.id,
+                                    onOpenChange = { open ->
+                                        openRowId = if (open) record.id else null
+                                    },
+                                    onDelete = {
+                                        openRowId = null
+                                        vm.deleteRecord(record.id)
+                                    },
+                                    onClick = { onRecordClick(record) }
+                                )
+                            }
                         }
                     }
+                    item { Spacer(Modifier.height(24.dp)) }
                 }
-                item { Spacer(Modifier.height(24.dp)) }
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun SearchField(value: String, onValueChange: (String) -> Unit) {
+    val focusManager = LocalFocusManager.current
+    TextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(24.dp),
+        singleLine = true,
+        placeholder = { Text("搜索：日期 / 备注 / 金额，空格组合") },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "搜索") },
+        trailingIcon = {
+            if (value.isNotEmpty()) {
+                IconButton(onClick = { onValueChange("") }) {
+                    Icon(Icons.Default.Close, contentDescription = "清空")
+                }
+            }
+        },
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent
+        )
+    )
+}
+
+@Composable
+private fun SearchResults(
+    state: SearchState,
+    openRowId: Long?,
+    onOpenChange: (Long?) -> Unit,
+    onDelete: (Long) -> Unit,
+    onRecordClick: (UiRecord) -> Unit
+) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        item(key = "search-summary") {
+            Text(
+                text = "找到 ${state.count} 条 · 合计 ¥${formatAmount(state.totalCents)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+        if (state.days.isEmpty()) {
+            item(key = "search-empty") {
+                Column(
+                    Modifier.fillMaxWidth().padding(top = 72.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("🔍", fontSize = 52.sp)
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        "没有匹配的记录",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "试试换个关键词，或清空搜索",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
+            }
+        }
+        for (day in state.days) {
+            item(key = "s-day-${day.date}") {
+                DayHeader(day, Modifier.animateItem(), showYear = true)
+            }
+            items(day.records, key = { "s-${it.id}" }) { record ->
+                Box(Modifier.padding(bottom = 4.dp).animateItem()) {
+                    SwipeRecordRow(
+                        record = record,
+                        isOpen = openRowId == record.id,
+                        onOpenChange = { open -> onOpenChange(if (open) record.id else null) },
+                        onDelete = {
+                            onOpenChange(null)
+                            onDelete(record.id)
+                        },
+                        onClick = { onRecordClick(record) }
+                    )
+                }
+            }
+        }
+        item { Spacer(Modifier.height(24.dp)) }
     }
 }
 
@@ -289,7 +406,7 @@ private fun BalanceCard(state: HomeState, onPrev: () -> Unit, onNext: () -> Unit
 }
 
 @Composable
-private fun DayHeader(day: DayGroup, modifier: Modifier = Modifier) {
+private fun DayHeader(day: DayGroup, modifier: Modifier = Modifier, showYear: Boolean = false) {
     Row(
         modifier
             .fillMaxWidth()
@@ -297,7 +414,12 @@ private fun DayHeader(day: DayGroup, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = day.date.format(DateTimeFormatter.ofPattern("M月d日 EEE", Locale.CHINA)),
+            text = day.date.format(
+                DateTimeFormatter.ofPattern(
+                    if (showYear) "yyyy年M月d日 EEE" else "M月d日 EEE",
+                    Locale.CHINA
+                )
+            ),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold
         )
