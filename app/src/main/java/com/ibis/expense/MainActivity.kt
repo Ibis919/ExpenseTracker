@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ibis.expense.ui.AppViewModel
+import com.ibis.expense.ui.CsvImportDialog
 import com.ibis.expense.ui.EditScreen
 import com.ibis.expense.ui.HomeScreen
 import com.ibis.expense.ui.SettingsScreen
@@ -54,10 +55,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val importUri = if (savedInstanceState == null) {
+            intent?.takeIf { it.action == android.content.Intent.ACTION_VIEW }?.data
+        } else null
         setContent {
             ExpenseTheme {
                 RequestNotificationPermission()
-                App()
+                App(importUri = importUri)
             }
         }
     }
@@ -82,9 +86,10 @@ private fun RequestNotificationPermission() {
 }
 
 @Composable
-fun App(vm: AppViewModel = viewModel()) {
+fun App(vm: AppViewModel = viewModel(), importUri: android.net.Uri? = null) {
     var tab by remember { mutableStateOf(0) }
     var overlay by remember { mutableStateOf<Screen?>(null) }
+    var pendingImportUri by remember { mutableStateOf(importUri) }
     when (val current = overlay) {
         is Screen.Edit -> EditScreen(
             vm = vm,
@@ -150,5 +155,9 @@ fun App(vm: AppViewModel = viewModel()) {
                 }
             }
         }
+    }
+
+    pendingImportUri?.let { uri ->
+        CsvImportDialog(vm = vm, uri = uri, onDismiss = { pendingImportUri = null })
     }
 }

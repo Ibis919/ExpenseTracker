@@ -50,6 +50,114 @@ import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 
 @Composable
+fun CsvImportDialog(vm: AppViewModel, uri: Uri, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    fun runImport(replace: Boolean) {
+        scope.launch {
+            vm.importCsv(uri, replace)
+                .onSuccess { outcome ->
+                    val msg = if (outcome.skipped > 0) {
+                        "成功导入 ${outcome.imported} 条，跳过 ${outcome.skipped} 条无效记录"
+                    } else {
+                        "成功导入 ${outcome.imported} 条记录"
+                    }
+                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                }
+                .onFailure { e ->
+                    Toast.makeText(context, "导入失败：${e.message}", Toast.LENGTH_LONG).show()
+                }
+        }
+        onDismiss()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("导入数据") },
+        text = {
+            Column {
+                Text("选择导入方式：")
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "合并导入：保留现有记录，追加 CSV 中的记录。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = { runImport(replace = true) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("清空后导入")
+                }
+                Text(
+                    "清空后导入：删除现有全部记录，再导入 CSV（换机迁移用）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { runImport(replace = false) }) {
+                Text("合并导入")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ImportSourceDialog(
+    onPickLocal: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("导入 CSV") },
+        text = {
+            Column {
+                Text("从哪里导入？")
+                Spacer(Modifier.height(16.dp))
+                Button(onClick = onPickLocal, modifier = Modifier.fillMaxWidth()) {
+                    Text("📁 从本机文件选择")
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "通过系统文件选择器从下载、文档等位置选取 CSV 文件。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(16.dp))
+                OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                    Text("💬 从微信等应用导入")
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "在微信中点击收到的 CSV 文件 → 右上角「···」→「用其他应用打开」→ 选择「记账」，即可直接导入，无需先保存到本机。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
 fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
     var text by remember { mutableStateOf(centsToInput(vm.budgetCents.value)) }
     val cents = parseAmountToCents(text)
@@ -57,6 +165,7 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
     val lastBackup by vm.lastBackup.collectAsState()
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+    var showImportSource by remember { mutableStateOf(false) }
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> pendingImportUri = uri }
@@ -71,26 +180,6 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
                         Toast.makeText(context, "导出失败：${e.message}", Toast.LENGTH_LONG).show()
                     }
             }
-        }
-    }
-
-    fun runImport(replace: Boolean) {
-        val uri = pendingImportUri
-        pendingImportUri = null
-        if (uri == null) return
-        scope.launch {
-            vm.importCsv(uri, replace)
-                .onSuccess { outcome ->
-                    val msg = if (outcome.skipped > 0) {
-                        "成功导入 ${outcome.imported} 条，跳过 ${outcome.skipped} 条无效记录"
-                    } else {
-                        "成功导入 ${outcome.imported} 条记录"
-                    }
-                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                }
-                .onFailure { e ->
-                    Toast.makeText(context, "导入失败：${e.message}", Toast.LENGTH_LONG).show()
-                }
         }
     }
 
@@ -187,11 +276,7 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
-                onClick = {
-                    importLauncher.launch(
-                        arrayOf("text/csv", "text/comma-separated-values", "application/csv", "text/plain")
-                    )
-                },
+                onClick = { showImportSource = true },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
@@ -201,47 +286,19 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
         }
     }
 
-    if (pendingImportUri != null) {
-        AlertDialog(
-            onDismissRequest = { pendingImportUri = null },
-            title = { Text("导入数据") },
-            text = {
-                Column {
-                    Text("选择导入方式：")
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "合并导入：保留现有记录，追加 CSV 中的记录。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = { runImport(replace = true) },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError
-                        )
-                    ) {
-                        Text("清空后导入")
-                    }
-                    Text(
-                        "清空后导入：删除现有全部记录，再导入 CSV（换机迁移用）。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+    if (showImportSource) {
+        ImportSourceDialog(
+            onPickLocal = {
+                showImportSource = false
+                importLauncher.launch(
+                    arrayOf("text/csv", "text/comma-separated-values", "application/csv", "text/plain")
+                )
             },
-            confirmButton = {
-                TextButton(onClick = { runImport(replace = false) }) {
-                    Text("合并导入")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingImportUri = null }) {
-                    Text("取消")
-                }
-            }
+            onDismiss = { showImportSource = false }
         )
+    }
+
+    pendingImportUri?.let { uri ->
+        CsvImportDialog(vm = vm, uri = uri, onDismiss = { pendingImportUri = null })
     }
 }
