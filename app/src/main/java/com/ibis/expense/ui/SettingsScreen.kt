@@ -2,6 +2,7 @@
 
 package com.ibis.expense.ui
 
+import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,6 +44,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.FileProvider
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -158,6 +160,49 @@ private fun ImportSourceDialog(
 }
 
 @Composable
+private fun ExportSourceDialog(
+    onShare: () -> Unit,
+    onSaveLocal: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("导出 CSV") },
+        text = {
+            Column {
+                Text("导出到哪里？")
+                Spacer(Modifier.height(16.dp))
+                Button(onClick = onShare, modifier = Modifier.fillMaxWidth()) {
+                    Text("💬 分享到微信等应用")
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "通过系统分享面板发送，可直接发到微信聊天或文件传输助手。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(16.dp))
+                OutlinedButton(onClick = onSaveLocal, modifier = Modifier.fillMaxWidth()) {
+                    Text("💾 保存到本机")
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "通过系统保存对话框存到下载、文档等任意位置。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
 fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
     var text by remember { mutableStateOf(centsToInput(vm.budgetCents.value)) }
     val cents = parseAmountToCents(text)
@@ -166,6 +211,7 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
     val lastBackup by vm.lastBackup.collectAsState()
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     var showImportSource by remember { mutableStateOf(false) }
+    var showExportSource by remember { mutableStateOf(false) }
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> pendingImportUri = uri }
@@ -176,9 +222,24 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
             scope.launch {
                 vm.exportCsvTo(uri)
                     .onSuccess { Toast.makeText(context, "已导出 $it 条记录", Toast.LENGTH_LONG).show() }
-                    .onFailure { e ->
-                        Toast.makeText(context, "导出失败：${e.message}", Toast.LENGTH_LONG).show()
-                    }
+                    .onFailure { e -> Toast.makeText(context, "导出失败：${e.message}", Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+
+    fun shareCsv() {
+        scope.launch {
+            val file = vm.exportCsvForShare()
+            if (file == null) {
+                Toast.makeText(context, "暂无记录可导出", Toast.LENGTH_SHORT).show()
+            } else {
+                val uri = FileProvider.getUriForFile(context, "com.ibis.expense.fileprovider", file)
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(intent, "分享记账数据"))
             }
         }
     }
@@ -264,11 +325,7 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
             }
             Spacer(Modifier.height(12.dp))
             OutlinedButton(
-                onClick = {
-                    val stamp = java.time.LocalDateTime.now()
-                        .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm"))
-                    exportLauncher.launch("记账-$stamp.csv")
-                },
+                onClick = { showExportSource = true },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
@@ -284,6 +341,22 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
             }
             Spacer(Modifier.height(24.dp))
         }
+    }
+
+    if (showExportSource) {
+        ExportSourceDialog(
+            onShare = {
+                showExportSource = false
+                shareCsv()
+            },
+            onSaveLocal = {
+                showExportSource = false
+                val stamp = java.time.LocalDateTime.now()
+                    .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm"))
+                exportLauncher.launch("记账-$stamp.csv")
+            },
+            onDismiss = { showExportSource = false }
+        )
     }
 
     if (showImportSource) {

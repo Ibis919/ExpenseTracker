@@ -11,7 +11,9 @@ import com.ibis.expense.data.BackupManager
 import com.ibis.expense.data.CategoryTotal
 import com.ibis.expense.data.ExpenseDatabase
 import com.ibis.expense.data.ExpenseRecord
+import java.io.File
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
@@ -184,6 +186,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun nextMonth() {
         _month.value = _month.value.plusMonths(1)
+    }
+
+    suspend fun exportCsvForShare(): File? = withContext(Dispatchers.IO) {
+        val records = dao.getAllOnce()
+        if (records.isEmpty()) return@withContext null
+        val app = getApplication<Application>()
+        val dir = File(app.cacheDir, "exports").apply { mkdirs() }
+        val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+        val file = File(dir, "记账-$stamp.csv")
+        file.writeText(buildCsv(records), Charsets.UTF_8)
+        file
     }
 
     suspend fun exportCsvTo(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
