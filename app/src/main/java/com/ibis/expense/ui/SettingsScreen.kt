@@ -2,7 +2,6 @@
 
 package com.ibis.expense.ui
 
-import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -47,7 +46,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 
@@ -62,6 +60,19 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> pendingImportUri = uri }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                vm.exportCsvTo(uri)
+                    .onSuccess { Toast.makeText(context, "已导出 $it 条记录", Toast.LENGTH_LONG).show() }
+                    .onFailure { e ->
+                        Toast.makeText(context, "导出失败：${e.message}", Toast.LENGTH_LONG).show()
+                    }
+            }
+        }
+    }
 
     fun runImport(replace: Boolean) {
         val uri = pendingImportUri
@@ -165,24 +176,9 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
             Spacer(Modifier.height(12.dp))
             OutlinedButton(
                 onClick = {
-                    scope.launch {
-                        val file = vm.exportCsv()
-                        if (file == null) {
-                            Toast.makeText(context, "暂无记录可导出", Toast.LENGTH_SHORT).show()
-                        } else {
-                            val uri = FileProvider.getUriForFile(
-                                context,
-                                "com.ibis.expense.fileprovider",
-                                file
-                            )
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/csv"
-                                putExtra(Intent.EXTRA_STREAM, uri)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            context.startActivity(Intent.createChooser(intent, "导出记账数据"))
-                        }
-                    }
+                    val stamp = java.time.LocalDateTime.now()
+                        .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm"))
+                    exportLauncher.launch("记账-$stamp.csv")
                 },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(16.dp)

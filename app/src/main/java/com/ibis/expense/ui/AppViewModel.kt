@@ -11,9 +11,7 @@ import com.ibis.expense.data.BackupManager
 import com.ibis.expense.data.CategoryTotal
 import com.ibis.expense.data.ExpenseDatabase
 import com.ibis.expense.data.ExpenseRecord
-import java.io.File
 import java.time.LocalDate
-import java.time.LocalDateTime
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
@@ -188,15 +186,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _month.value = _month.value.plusMonths(1)
     }
 
-    suspend fun exportCsv(): File? = withContext(Dispatchers.IO) {
-        val records = dao.getAllOnce()
-        if (records.isEmpty()) return@withContext null
-        val app = getApplication<Application>()
-        val dir = File(app.cacheDir, "exports").apply { mkdirs() }
-        val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
-        val file = File(dir, "expenses-$stamp.csv")
-        file.writeText(buildCsv(records), Charsets.UTF_8)
-        file
+    suspend fun exportCsvTo(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val records = dao.getAllOnce()
+            if (records.isEmpty()) {
+                return@withContext Result.failure(IllegalStateException("暂无记录可导出"))
+            }
+            val app = getApplication<Application>()
+            app.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(buildCsv(records).toByteArray(Charsets.UTF_8))
+                out.flush()
+            } ?: return@withContext Result.failure(IllegalStateException("无法打开目标文件"))
+            Result.success(records.size)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     data class ImportOutcome(val imported: Int, val skipped: Int)
