@@ -221,7 +221,8 @@ private fun SearchResults(
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         item(key = "search-summary") {
             Text(
-                text = "找到 ${state.count} 条 · 合计 ¥${formatAmount(state.totalCents)}",
+                text = "找到 ${state.count} 条 · 合计 ¥${formatAmount(state.totalCents)}" +
+                    if (state.excludedTotalCents > 0) " + 代付 ¥${formatAmount(state.excludedTotalCents)}" else "",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 8.dp)
@@ -521,12 +522,26 @@ private fun RecordRowContent(record: UiRecord) {
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                text = record.category,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                color = color
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = record.category,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    color = color
+                )
+                if (record.excluded) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "代付",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFB45309),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0x1DB45309))
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                    )
+                }
+            }
             if (record.note.isNotBlank()) {
                 Text(
                     text = record.note,

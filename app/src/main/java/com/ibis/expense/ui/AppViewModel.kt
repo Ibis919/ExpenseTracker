@@ -5,7 +5,6 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.room.Room
 import com.ibis.expense.BudgetNotifier
 import com.ibis.expense.data.BackupManager
 import com.ibis.expense.data.CategoryTotal
@@ -37,7 +36,8 @@ data class UiRecord(
     val createdAt: Long,
     val category: String,
     val note: String,
-    val overBudget: Boolean
+    val overBudget: Boolean,
+    val excluded: Boolean
 )
 
 data class DayGroup(
@@ -71,12 +71,13 @@ data class SearchState(
     val query: String,
     val count: Int,
     val totalCents: Long,
+    val excludedTotalCents: Long,
     val days: List<DayGroup>
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val db = Room.databaseBuilder(app, ExpenseDatabase::class.java, "expenses.db").build()
+    private val db = ExpenseDatabase.build(app)
     private val dao = db.dao()
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
@@ -119,7 +120,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val byMonth = records.groupBy { YearMonth.from(LocalDate.ofEpochDay(it.epochDay)) }
             val trend = (5L downTo 0L).map { offset ->
                 val ym = month.minusMonths(offset)
-                MonthSpent(ym, byMonth[ym]?.sumOf { it.amountCents } ?: 0L)
+                MonthSpent(ym, byMonth[ym]?.filter { !it.excluded }?.sumOf { it.amountCents } ?: 0L)
             }
             StatsState(
                 month = month,
@@ -140,7 +141,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun addRecord(amountCents: Long, epochDay: Long, category: String, note: String) {
+    fun addRecord(amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = false) {
         viewModelScope.launch {
             dao.insert(
                 ExpenseRecord(
@@ -148,13 +149,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     epochDay = epochDay,
                     createdAt = System.currentTimeMillis(),
                     category = category,
-                    note = note.trim()
+                    note = note.trim(),
+                    excluded = excluded
                 )
             )
         }
     }
 
-    fun updateRecord(record: UiRecord, amountCents: Long, epochDay: Long, category: String, note: String) {
+    fun updateRecord(record: UiRecord, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = record.excluded) {
         viewModelScope.launch {
             dao.update(
                 ExpenseRecord(
@@ -163,7 +165,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     epochDay = epochDay,
                     createdAt = record.createdAt,
                     category = category,
-                    note = note.trim()
+                    note = note.trim(),
+                    excluded = excluded
                 )
             )
         }
@@ -243,7 +246,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     epochDay = date.toEpochDay(),
                     createdAt = System.currentTimeMillis(),
                     category = fields[2].trim(),
-                    note = fields.getOrElse(3) { "" }.trim()
+                    note = fields.getOrElse(3) { "" }.trim(),
+                    excluded = fields.getOrElse(4) { "" }.trim() == "是"
                 )
             }
             if (records.isEmpty()) {
@@ -284,13 +288,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun buildCsv(records: List<ExpenseRecord>): String = buildString {
         append('\uFEFF')
-        appendLine("日期,金额,分类,备注")
+        appendLine("日期,金额,分类,备注,代付")
         val dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         for (r in records) {
             append(LocalDate.ofEpochDay(r.epochDay).format(dateFormat)).append(',')
             append(formatAmount(r.amountCents)).append(',')
             append(r.category).append(',')
-            append('"').append(r.note.replace("\"", "\"\"")).append('"')
+            append('"').append(r.note.replace("\"", "\"\"")).append('"').append(',')
+            append(if (r.excluded) "是" else "否")
             appendLine()
         }
     }
@@ -338,7 +343,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         createdAt = it.createdAt,
                         category = it.category,
                         note = it.note,
-                        overBudget = false
+                        overBudget = false,
+                        excluded = it.excluded
                     )
                 }
             )
@@ -346,7 +352,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return SearchState(
             query = query,
             count = matched.size,
-            totalCents = matched.sumOf { it.amountCents },
+            totalCents = matched.filter { !it.excluded }.sumOf { it.amountCents },
+            excludedTotalCents = matched.filter { it.excluded }.sumOf { it.amountCents },
             days = days
         )
     }
@@ -375,14 +382,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val over = HashMap<Long, Boolean>(records.size)
         var cumulative = 0L
         for (record in ascending) {
+            if (record.excluded) {
+                over[record.id] = false
+                continue
+            }
             cumulative += record.amountCents
             over[record.id] = cumulative > budget
         }
-        val spent = records.sumOf { it.amountCents }
+        val spent = records.filter { !it.excluded }.sumOf { it.amountCents }
         val days = records.groupBy { it.epochDay }.map { (day, list) ->
             DayGroup(
                 date = LocalDate.ofEpochDay(day),
-                dayTotalCents = list.sumOf { it.amountCents },
+                dayTotalCents = list.filter { !it.excluded }.sumOf { it.amountCents },
                 records = list.map {
                     UiRecord(
                         id = it.id,
@@ -391,7 +402,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         createdAt = it.createdAt,
                         category = it.category,
                         note = it.note,
-                        overBudget = over[it.id] == true
+                        overBudget = over[it.id] == true,
+                        excluded = it.excluded
                     )
                 }
             )

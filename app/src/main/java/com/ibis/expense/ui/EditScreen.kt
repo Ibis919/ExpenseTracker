@@ -59,6 +59,7 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit) {
     }
     var category by remember { mutableStateOf(initial?.category ?: Categories.first()) }
     var note by remember { mutableStateOf(initial?.note ?: "") }
+    var excluded by remember { mutableStateOf(initial?.excluded ?: false) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     val amountCents = parseAmountToCents(amount)
@@ -139,15 +140,30 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+            Spacer(Modifier.height(16.dp))
+            FilterChip(
+                selected = excluded,
+                onClick = { excluded = !excluded },
+                label = { Text(if (excluded) "🤝 代付：不计入我的开销" else "🤝 帮别人代付（不计入我的开销）") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (excluded) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "这笔钱不占预算、不计入统计，但会出现在明细列表中。备注里写上对方名字，日后一搜即知数额。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Spacer(Modifier.height(24.dp))
             Button(
                 onClick = {
                     val cents = amountCents
                     if (cents != null) {
                         if (initial == null) {
-                            vm.addRecord(cents, epochDay, category, note)
+                            vm.addRecord(cents, epochDay, category, note, excluded)
                         } else {
-                            vm.updateRecord(initial, cents, epochDay, category, note)
+                            vm.updateRecord(initial, cents, epochDay, category, note, excluded)
                         }
                         onDone()
                     }
