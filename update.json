@@ -1,5 +1,5 @@
 {
-  "version": "0.9.1",
-  "notes": "检查更新提速：改为多源并行检测（jsDelivr 三个 CDN 入口 + GitHub），谁快用谁、谁新用谁，典型 2-3 秒出结果（旧版最长要 13 秒）；单个 CDN 节点缓存滞后时自动从其他入口拿到新版，检测更稳。",
-  "apkUrl": "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.9.1/apk/latest.apk"
+  "version": "0.9.2",
+  "notes": "重要修复：上一版（0.9.1）CDN 下载通道发错了包（下到的是 0.9.0），本版修正。同时下载提速加固：APK 下载在 jsDelivr 三个域名（cdn/fastly/gcore）间自动轮换，单个域名卡住 20 秒即切换，免 VPN 下载更稳。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.9.2/apk/latest.apk"
 }

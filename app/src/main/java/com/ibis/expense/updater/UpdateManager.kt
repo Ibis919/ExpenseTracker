@@ -95,23 +95,39 @@ object UpdateManager {
     }
 
     suspend fun downloadApk(context: Context, url: String, onProgress: (Int) -> Unit): File {
-        return try {
-            downloadFrom(context, url, onProgress)
-        } catch (e: Exception) {
-            if (url.startsWith("https://cdn.jsdelivr.net/")) {
-                val gh = runCatching { fetchGithubUpdate() }.getOrNull()
-                if (gh != null && gh.apkUrl != url) downloadFrom(context, gh.apkUrl, onProgress) else throw e
-            } else {
-                throw e
+        val attempts = buildList {
+            add(url)
+            if (url.contains("jsdelivr.net")) {
+                val path = url.substringAfter("jsdelivr.net/")
+                for (d in listOf("cdn", "fastly", "gcore")) add("https://$d.jsdelivr.net/$path")
+            }
+        }.distinct()
+        var lastError: Exception? = null
+        for (u in attempts) {
+            try {
+                return downloadFrom(context, u, onProgress)
+            } catch (e: Exception) {
+                lastError = e
             }
         }
+        if (url.contains("jsdelivr.net")) {
+            val gh = runCatching { fetchGithubUpdate() }.getOrNull()
+            if (gh != null && gh.apkUrl != url) {
+                try {
+                    return downloadFrom(context, gh.apkUrl, onProgress)
+                } catch (e: Exception) {
+                    lastError = e
+                }
+            }
+        }
+        throw lastError ?: IllegalStateException("下载失败")
     }
 
     private suspend fun downloadFrom(context: Context, url: String, onProgress: (Int) -> Unit): File =
         withContext(Dispatchers.IO) {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 15_000
-            conn.readTimeout = 30_000
+            conn.readTimeout = 20_000
             conn.setRequestProperty("User-Agent", UA)
             try {
                 if (conn.responseCode != 200) error("HTTP ${conn.responseCode}")
