@@ -20,44 +20,73 @@ data class UpdateInfo(
 )
 
 object UpdateManager {
-    private const val LATEST_API = "https://api.github.com/repos/Ibis919/ExpenseTracker/releases/latest"
+    private const val CDN_UPDATE_JSON = "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@main/update.json"
+    private const val GITHUB_LATEST_API = "https://api.github.com/repos/Ibis919/ExpenseTracker/releases/latest"
     private const val UA = "ExpenseTracker-Android"
 
     fun currentVersion(context: Context): String =
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
             .getOrNull() ?: "?"
 
-    suspend fun checkLatest(current: String): UpdateInfo? = withContext(Dispatchers.IO) {
-        val conn = URL(LATEST_API).openConnection() as HttpURLConnection
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
+    private suspend fun httpGet(url: String, timeoutMs: Int): String = withContext(Dispatchers.IO) {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = timeoutMs
+        conn.readTimeout = timeoutMs
         conn.setRequestProperty("User-Agent", UA)
         try {
-            if (conn.responseCode != 200) error("GitHub API ${conn.responseCode}")
-            val json = JSONObject(conn.inputStream.bufferedReader().readText())
-            val tag = json.optString("tag_name").removePrefix("v")
-            if (tag.isEmpty() || tag == current) return@withContext null
-            val assets = json.optJSONArray("assets") ?: JSONArray()
-            var apkUrl = ""
-            for (i in 0 until assets.length()) {
-                val a = assets.getJSONObject(i)
-                if (a.optString("name").endsWith(".apk")) {
-                    apkUrl = a.optString("browser_download_url")
-                    break
-                }
-            }
-            if (apkUrl.isEmpty()) return@withContext null
-            UpdateInfo(
-                version = tag,
-                notes = json.optString("body").take(600),
-                apkUrl = apkUrl
-            )
+            if (conn.responseCode != 200) error("HTTP ${conn.responseCode}")
+            conn.inputStream.bufferedReader().readText()
         } finally {
             conn.disconnect()
         }
     }
 
-    suspend fun downloadApk(context: Context, url: String, onProgress: (Int) -> Unit): File =
+    private suspend fun fetchCdnUpdate(): UpdateInfo? {
+        val json = JSONObject(httpGet(CDN_UPDATE_JSON, 8000))
+        val version = json.optString("version")
+        val apkUrl = json.optString("apkUrl")
+        if (version.isEmpty() || apkUrl.isEmpty()) return null
+        return UpdateInfo(version, json.optString("notes").take(600), apkUrl)
+    }
+
+    private suspend fun fetchGithubUpdate(): UpdateInfo? {
+        val json = JSONObject(httpGet(GITHUB_LATEST_API, 10_000))
+        val tag = json.optString("tag_name").removePrefix("v")
+        if (tag.isEmpty()) return null
+        val assets = json.optJSONArray("assets") ?: JSONArray()
+        var apkUrl = ""
+        for (i in 0 until assets.length()) {
+            val a = assets.getJSONObject(i)
+            if (a.optString("name").endsWith(".apk")) {
+                apkUrl = a.optString("browser_download_url")
+                break
+            }
+        }
+        if (apkUrl.isEmpty()) return null
+        return UpdateInfo(tag, json.optString("body").take(600), apkUrl)
+    }
+
+    suspend fun checkLatest(current: String): UpdateInfo? {
+        val cdn = runCatching { fetchCdnUpdate() }.getOrNull()
+        if (cdn != null) return if (cdn.version == current) null else cdn
+        val gh = runCatching { fetchGithubUpdate() }.getOrNull() ?: return null
+        return if (gh.version == current) null else gh
+    }
+
+    suspend fun downloadApk(context: Context, url: String, onProgress: (Int) -> Unit): File {
+        return try {
+            downloadFrom(context, url, onProgress)
+        } catch (e: Exception) {
+            if (url.startsWith("https://cdn.jsdelivr.net/")) {
+                val gh = runCatching { fetchGithubUpdate() }.getOrNull()
+                if (gh != null && gh.apkUrl != url) downloadFrom(context, gh.apkUrl, onProgress) else throw e
+            } else {
+                throw e
+            }
+        }
+    }
+
+    private suspend fun downloadFrom(context: Context, url: String, onProgress: (Int) -> Unit): File =
         withContext(Dispatchers.IO) {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 15_000

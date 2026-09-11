@@ -1,0 +1,5 @@
+{
+  "version": "0.7.1",
+  "notes": "更新源升级为国内 CDN（jsDelivr）+ GitHub 双源：不开 VPN 也能检查更新、下载安装包。",
+  "apkUrl": "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@main/apk/latest.apk"
+}
