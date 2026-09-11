@@ -1,5 +1,5 @@
 {
-  "version": "0.9.0",
-  "notes": "四波升级一次到位：1) 记账模板——高频消费存成模板，记一笔页点按一键带入，长按删除；2) 自定义分类——不再固定 7 个，可添加/改名/删除/自选图标，删除时记录自动归入「其他」不丢失；3) 消费趋势折线图——统计页近 6/12 个月支出走势，当前月高亮；4) 上一版功能同步到位：回收站（左滑删除 30 天可恢复）、月度环比卡片、周期性支出自动记账。数据库自动迁移，旧数据无损。",
-  "apkUrl": "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.9.0/apk/latest.apk"
+  "version": "0.9.1",
+  "notes": "检查更新提速：改为多源并行检测（jsDelivr 三个 CDN 入口 + GitHub），谁快用谁、谁新用谁，典型 2-3 秒出结果（旧版最长要 13 秒）；单个 CDN 节点缓存滞后时自动从其他入口拿到新版，检测更稳。",
+  "apkUrl": "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.9.1/apk/latest.apk"
 }

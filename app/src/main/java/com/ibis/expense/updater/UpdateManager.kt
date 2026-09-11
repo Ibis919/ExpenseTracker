@@ -9,7 +9,10 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,7 +23,11 @@ data class UpdateInfo(
 )
 
 object UpdateManager {
-    private const val CDN_UPDATE_JSON = "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@main/update.json"
+    private val CDN_UPDATE_JSON_URLS = listOf(
+        "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@main/update.json",
+        "https://fastly.jsdelivr.net/gh/Ibis919/ExpenseTracker@main/update.json",
+        "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@main/update.json"
+    )
     private const val GITHUB_LATEST_API = "https://api.github.com/repos/Ibis919/ExpenseTracker/releases/latest"
     private const val UA = "ExpenseTracker-Android"
 
@@ -41,8 +48,8 @@ object UpdateManager {
         }
     }
 
-    private suspend fun fetchCdnUpdate(): UpdateInfo? {
-        val json = JSONObject(httpGet(CDN_UPDATE_JSON, 8000))
+    private suspend fun fetchCdnUpdate(url: String): UpdateInfo? {
+        val json = JSONObject(httpGet(url, 4_000))
         val version = json.optString("version")
         val apkUrl = json.optString("apkUrl")
         if (version.isEmpty() || apkUrl.isEmpty()) return null
@@ -50,7 +57,7 @@ object UpdateManager {
     }
 
     private suspend fun fetchGithubUpdate(): UpdateInfo? {
-        val json = JSONObject(httpGet(GITHUB_LATEST_API, 5_000))
+        val json = JSONObject(httpGet(GITHUB_LATEST_API, 3_000))
         val tag = json.optString("tag_name").removePrefix("v")
         if (tag.isEmpty()) return null
         val assets = json.optJSONArray("assets") ?: JSONArray()
@@ -75,14 +82,16 @@ object UpdateManager {
         return key
     }
 
-    suspend fun checkLatest(current: String): UpdateInfo? {
-        val candidates = listOfNotNull(
-            runCatching { fetchCdnUpdate() }.getOrNull(),
-            runCatching { fetchGithubUpdate() }.getOrNull()
-        )
-        return candidates
-            .filter { versionKey(it.version) > versionKey(current) }
-            .maxByOrNull { versionKey(it.version) }
+    suspend fun checkLatest(current: String): UpdateInfo? = withTimeoutOrNull(6_000) {
+        coroutineScope {
+            val jobs = CDN_UPDATE_JSON_URLS.map { url ->
+                async { runCatching { fetchCdnUpdate(url) }.getOrNull() }
+            } + async { runCatching { fetchGithubUpdate() }.getOrNull() }
+            jobs.map { it.await() }
+                .filterNotNull()
+                .filter { versionKey(it.version) > versionKey(current) }
+                .maxByOrNull { versionKey(it.version) }
+        }
     }
 
     suspend fun downloadApk(context: Context, url: String, onProgress: (Int) -> Unit): File {
