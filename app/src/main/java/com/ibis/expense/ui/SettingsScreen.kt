@@ -220,21 +220,22 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var downloadProgress by remember { mutableIntStateOf(-1) }
     var updateError by remember { mutableStateOf<String?>(null) }
-    val updateState = remember { mutableStateOf<String?>(null) }
+    var isCheckingUpdate by remember { mutableStateOf(false) }
 
     fun checkForUpdate() {
-        updateState.value = "checking"
+        if (isCheckingUpdate) return
+        isCheckingUpdate = true
         scope.launch {
             try {
                 val info = UpdateManager.checkLatest(currentVersion)
-                updateState.value = null
+                isCheckingUpdate = false
                 if (info == null) {
                     Toast.makeText(context, "已是最新版本 v$currentVersion", Toast.LENGTH_SHORT).show()
                 } else {
                     updateInfo = info
                 }
             } catch (e: Exception) {
-                updateState.value = null
+                isCheckingUpdate = false
                 Toast.makeText(context, "检查失败：${e.message}", Toast.LENGTH_LONG).show()
             }
         }
@@ -393,15 +394,21 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
                 onClick = { checkForUpdate() },
-                enabled = updateState == null,
+                enabled = !isCheckingUpdate,
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Text(if (updateState == null) "🔍 检查更新（当前 v${currentVersion}）" else "检查中…")
+                Text(if (isCheckingUpdate) "检查中…" else "🔍 检查更新")
             }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "当前版本：v$currentVersion",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
             Spacer(Modifier.height(4.dp))
             Text(
-                "更新源：GitHub Releases，仅在检查时联网，记账数据不出本机。",
+                "更新源：jsDelivr CDN（国内直连）+ GitHub 兜底，仅检查更新时联网，记账数据不出本机。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

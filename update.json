@@ -1,5 +1,5 @@
 {
-  "version": "0.7.1",
-  "notes": "更新源升级为国内 CDN（jsDelivr）+ GitHub 双源：不开 VPN 也能检查更新、下载安装包。",
+  "version": "0.7.2",
+  "notes": "修复：检查更新按钮一直显示「检查中」无法点击的问题；版本号现在独立显示在检查按钮下方，方便人工核对。",
   "apkUrl": "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@main/apk/latest.apk"
 }
