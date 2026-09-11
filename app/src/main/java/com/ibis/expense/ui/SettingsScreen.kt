@@ -28,6 +28,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -38,6 +39,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,6 +50,8 @@ import androidx.core.content.FileProvider
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.ibis.expense.updater.UpdateInfo
+import com.ibis.expense.updater.UpdateManager
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 
@@ -212,6 +216,50 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     var showImportSource by remember { mutableStateOf(false) }
     var showExportSource by remember { mutableStateOf(false) }
+    val currentVersion = remember { UpdateManager.currentVersion(context) }
+    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    var downloadProgress by remember { mutableIntStateOf(-1) }
+    var updateError by remember { mutableStateOf<String?>(null) }
+    val updateState = remember { mutableStateOf<String?>(null) }
+
+    fun checkForUpdate() {
+        updateState.value = "checking"
+        scope.launch {
+            try {
+                val info = UpdateManager.checkLatest(currentVersion)
+                updateState.value = null
+                if (info == null) {
+                    Toast.makeText(context, "已是最新版本 v$currentVersion", Toast.LENGTH_SHORT).show()
+                } else {
+                    updateInfo = info
+                }
+            } catch (e: Exception) {
+                updateState.value = null
+                Toast.makeText(context, "检查失败：${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun startDownload(info: UpdateInfo) {
+        updateInfo = null
+        downloadProgress = 0
+        scope.launch {
+            try {
+                val file = UpdateManager.downloadApk(context, info.apkUrl) { p -> downloadProgress = p }
+                downloadProgress = -1
+                if (!UpdateManager.canRequestInstall(context)) {
+                    Toast.makeText(context, "请先允许本应用安装未知应用，授权后重试", Toast.LENGTH_LONG).show()
+                    context.startActivity(UpdateManager.installPermissionIntent(context))
+                } else {
+                    UpdateManager.installApk(context, file)
+                }
+            } catch (e: Exception) {
+                downloadProgress = -1
+                updateError = "下载失败：${e.message}。可在 GitHub Releases 手动下载。"
+            }
+        }
+    }
+
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> pendingImportUri = uri }
@@ -339,6 +387,24 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
             ) {
                 Text("📥 导入 CSV")
             }
+
+            Spacer(Modifier.height(32.dp))
+            Text("关于", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { checkForUpdate() },
+                enabled = updateState == null,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(if (updateState == null) "🔍 检查更新（当前 v${currentVersion}）" else "检查中…")
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "更新源：GitHub Releases，仅在检查时联网，记账数据不出本机。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -373,5 +439,63 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
 
     pendingImportUri?.let { uri ->
         CsvImportDialog(vm = vm, uri = uri, onDismiss = { pendingImportUri = null })
+    }
+
+    updateInfo?.let { info ->
+        AlertDialog(
+            onDismissRequest = { updateInfo = null },
+            title = { Text("发现新版本 v${info.version}") },
+            text = {
+                Column {
+                    Text("当前版本 v$currentVersion")
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        info.notes,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 12
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = { startDownload(info) }) { Text("立即更新") }
+            },
+            dismissButton = {
+                TextButton(onClick = { updateInfo = null }) { Text("下次再说") }
+            }
+        )
+    }
+
+    if (downloadProgress >= 0) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("正在下载新版本") },
+            text = {
+                Column {
+                    LinearProgressIndicator(
+                        progress = { downloadProgress / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "$downloadProgress%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = {}
+        )
+    }
+
+    updateError?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { updateError = null },
+            title = { Text("更新失败") },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = { updateError = null }) { Text("知道了") }
+            }
+        )
     }
 }
