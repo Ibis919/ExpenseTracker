@@ -1,5 +1,5 @@
 {
-  "version": "0.7.2",
-  "notes": "修复：检查更新按钮一直显示「检查中」无法点击的问题；版本号现在独立显示在检查按钮下方，方便人工核对。",
-  "apkUrl": "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@main/apk/latest.apk"
+  "version": "0.9.0",
+  "notes": "四波升级一次到位：1) 记账模板——高频消费存成模板，记一笔页点按一键带入，长按删除；2) 自定义分类——不再固定 7 个，可添加/改名/删除/自选图标，删除时记录自动归入「其他」不丢失；3) 消费趋势折线图——统计页近 6/12 个月支出走势，当前月高亮；4) 上一版功能同步到位：回收站（左滑删除 30 天可恢复）、月度环比卡片、周期性支出自动记账。数据库自动迁移，旧数据无损。",
+  "apkUrl": "https://cdn.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.9.0/apk/latest.apk"
 }

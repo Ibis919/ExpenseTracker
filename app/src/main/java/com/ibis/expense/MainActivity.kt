@@ -38,17 +38,23 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ibis.expense.ui.AppViewModel
+import com.ibis.expense.ui.CategoryManageScreen
 import com.ibis.expense.ui.CsvImportDialog
 import com.ibis.expense.ui.EditScreen
 import com.ibis.expense.ui.HomeScreen
+import com.ibis.expense.ui.RecurringScreen
 import com.ibis.expense.ui.SettingsScreen
 import com.ibis.expense.ui.StatsScreen
+import com.ibis.expense.ui.TrashScreen
 import com.ibis.expense.ui.UiRecord
 import com.ibis.expense.ui.theme.ExpenseTheme
 
 sealed interface Screen {
     data class Edit(val record: UiRecord) : Screen
     data object Settings : Screen
+    data object Trash : Screen
+    data object Recurring : Screen
+    data object CategoryManage : Screen
 }
 
 class MainActivity : ComponentActivity() {
@@ -98,8 +104,14 @@ fun App(vm: AppViewModel = viewModel(), importUri: android.net.Uri? = null) {
         )
         Screen.Settings -> SettingsScreen(
             vm = vm,
-            onDone = { overlay = null }
+            onDone = { overlay = null },
+            onOpenTrash = { overlay = Screen.Trash },
+            onOpenRecurring = { overlay = Screen.Recurring },
+            onOpenCategories = { overlay = Screen.CategoryManage }
         )
+        Screen.Trash -> TrashScreen(vm = vm, onDone = { overlay = Screen.Settings })
+        Screen.Recurring -> RecurringScreen(vm = vm, onDone = { overlay = Screen.Settings })
+        Screen.CategoryManage -> CategoryManageScreen(vm = vm, onDone = { overlay = Screen.Settings })
         null -> Scaffold(
             bottomBar = {
                 NavigationBar {

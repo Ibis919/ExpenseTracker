@@ -207,7 +207,13 @@ private fun ExportSourceDialog(
 }
 
 @Composable
-fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
+fun SettingsScreen(
+    vm: AppViewModel,
+    onDone: () -> Unit,
+    onOpenTrash: () -> Unit = onDone,
+    onOpenRecurring: () -> Unit = onDone,
+    onOpenCategories: () -> Unit = onDone
+) {
     var text by remember { mutableStateOf(centsToInput(vm.budgetCents.value)) }
     val cents = parseAmountToCents(text)
     val context = LocalContext.current
@@ -387,6 +393,30 @@ fun SettingsScreen(vm: AppViewModel, onDone: () -> Unit) {
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Text("📥 导入 CSV")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onOpenRecurring,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("🔁 周期性支出")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onOpenCategories,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("🏷 分类管理")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onOpenTrash,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("🗑 回收站")
             }
 
             Spacer(Modifier.height(32.dp))

@@ -29,6 +29,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -39,14 +40,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -69,6 +76,8 @@ private val ChartColors = listOf(
 @Composable
 fun StatsScreen(vm: AppViewModel) {
     val state = vm.statsState.collectAsState().value
+    val categories by vm.categoriesState.collectAsState()
+    val emoji = remember(categories) { categories.associate { it.name to it.emoji } }
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("统计") })
@@ -99,8 +108,10 @@ fun StatsScreen(vm: AppViewModel) {
                 } else {
                     DonutCard(s)
                     Spacer(Modifier.height(16.dp))
-                    LegendCard(s)
+                    LegendCard(s, emoji)
                 }
+                Spacer(Modifier.height(16.dp))
+                CompareCard(s, emoji)
                 Spacer(Modifier.height(16.dp))
                 TrendCard(s)
                 Spacer(Modifier.height(24.dp))
@@ -181,7 +192,7 @@ private fun DonutCard(s: StatsState) {
 }
 
 @Composable
-private fun LegendCard(s: StatsState) {
+private fun LegendCard(s: StatsState, emoji: Map<String, String>) {
     Card(
         Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -197,7 +208,7 @@ private fun LegendCard(s: StatsState) {
                 ) {
                     Box(Modifier.size(10.dp).clip(CircleShape).background(color))
                     Spacer(Modifier.width(8.dp))
-                    Text("${categoryEmoji(ct.category)} ${ct.category}", style = MaterialTheme.typography.bodyLarge)
+                    Text("${categoryEmoji(ct.category, emoji)} ${ct.category}", style = MaterialTheme.typography.bodyLarge)
                     Spacer(Modifier.weight(1f))
                     Text(
                         "${"%.1f".format(percent)}%",
@@ -217,7 +228,16 @@ private fun LegendCard(s: StatsState) {
 }
 
 @Composable
-private fun TrendCard(s: StatsState) {
+private fun CompareCard(s: StatsState, emoji: Map<String, String>) {
+    val prev = s.prevMonthTotalCents
+    val curr = s.totalCents
+    val delta = curr - prev
+    val pct = if (prev > 0) (delta * 100f / prev) else Float.NaN
+    val up = delta > 0
+    val same = delta == 0L
+    val red = Color(0xFFB3402A)
+    val green = Color(0xFF006C4C)
+
     Card(
         Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -225,57 +245,203 @@ private fun TrendCard(s: StatsState) {
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(
-                "近 6 个月支出",
+                "本月 vs 上月",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold
             )
-            Spacer(Modifier.height(16.dp))
-            val maxTotal = s.trend.maxOf { it.totalCents }.coerceAtLeast(1L)
-            val barProgress = remember { Animatable(0f) }
-            LaunchedEffect(s.month) {
-                barProgress.snapTo(0f)
-                barProgress.animateTo(1f, tween(700))
-            }
+            Spacer(Modifier.height(8.dp))
             Row(
-                Modifier.fillMaxWidth().height(170.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                val currentMonth = YearMonth.now()
-                s.trend.forEach { m ->
-                    val isCurrent = m.month == currentMonth
-                    val fraction = m.totalCents.toFloat() / maxTotal * barProgress.value
-                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("总支出", style = MaterialTheme.typography.bodyMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "¥${formatAmount(curr)}",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (!same) {
+                        Spacer(Modifier.width(8.dp))
                         Text(
-                            text = (m.totalCents / 100).toString(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1
+                            text = if (pct.isNaN()) "新增支出" else "${if (up) "↑" else "↓"}${"%.0f".format(kotlin.math.abs(pct))}%",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (up) red else green
                         )
-                        Spacer(Modifier.height(4.dp))
-                        Box(
-                            Modifier.weight(1f).fillMaxWidth(),
-                            contentAlignment = Alignment.BottomCenter
-                        ) {
-                            Box(
-                                Modifier
-                                    .fillMaxWidth(0.55f)
-                                    .fillMaxHeight(fraction.coerceIn(0.005f, 1f))
-                                    .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
-                                    .background(
-                                        if (isCurrent) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
-                                    )
-                            )
-                        }
-                        Spacer(Modifier.height(4.dp))
+                    }
+                }
+            }
+            Text(
+                "上月同期 ¥${formatAmount(prev)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            val prevMap = s.prevCategoryTotals.associate { it.category to it.totalCents }
+            val deltas = (s.categoryTotals + s.prevCategoryTotals)
+                .distinctBy { it.category }
+                .map { ct -> Triple(ct.category, ct.totalCents, (ct.totalCents - (prevMap[ct.category] ?: 0L))) }
+                .sortedByDescending { kotlin.math.abs(it.third) }
+                .filter { it.third != 0L }
+                .take(3)
+            if (deltas.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "变化最大",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(4.dp))
+                deltas.forEach { (cat, total, d) ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
                         Text(
-                            "${m.month.monthValue}月",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            "${categoryEmoji(cat, emoji)} $cat ¥${formatAmount(total)}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            "${if (d > 0) "+" else ""}¥${formatAmount(d)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (d > 0) red else green
                         )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TrendCard(s: StatsState) {
+    var range by rememberSaveable { mutableIntStateOf(6) }
+    val months = s.trend.takeLast(range)
+    val maxTotal = months.maxOf { it.totalCents }.coerceAtLeast(1L)
+    val primary = MaterialTheme.colorScheme.primary
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "消费趋势",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                listOf(6, 12).forEach { r ->
+                    FilterChip(
+                        selected = range == r,
+                        onClick = { range = r },
+                        label = { Text("${r}月") },
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth()) {
+                months.forEachIndexed { i, m ->
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        if (range == 6 || i % 2 == 0) {
+                            Text(
+                                compactYuan(m.totalCents),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (m.month == s.month) primary else labelColor,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            val progress = remember { Animatable(0f) }
+            LaunchedEffect(s.month, range) {
+                progress.snapTo(0f)
+                progress.animateTo(1f, tween(600))
+            }
+            Canvas(Modifier.fillMaxWidth().height(120.dp)) {
+                val n = months.size
+                if (n < 2) return@Canvas
+                val stepX = size.width / n
+                val topPad = 6.dp.toPx()
+                val bottomY = size.height - 6.dp.toPx()
+                fun pointY(v: Long): Float =
+                    bottomY - (v.toFloat() / maxTotal * progress.value) * (bottomY - topPad)
+                val pts = months.mapIndexed { i, m ->
+                    Offset(stepX * (i + 0.5f), pointY(m.totalCents))
+                }
+                val fillPath = Path().apply {
+                    moveTo(pts.first().x, bottomY)
+                    pts.forEach { lineTo(it.x, it.y) }
+                    lineTo(pts.last().x, bottomY)
+                    close()
+                }
+                drawPath(
+                    fillPath,
+                    brush = Brush.verticalGradient(
+                        colors = listOf(primary.copy(alpha = 0.30f), primary.copy(alpha = 0.02f)),
+                        startY = topPad,
+                        endY = bottomY
+                    )
+                )
+                val linePath = Path().apply {
+                    moveTo(pts.first().x, pts.first().y)
+                    pts.drop(1).forEach { lineTo(it.x, it.y) }
+                }
+                drawPath(
+                    linePath,
+                    color = primary,
+                    style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+                months.forEachIndexed { i, m ->
+                    val selected = m.month == s.month
+                    drawCircle(
+                        color = primary,
+                        radius = (if (selected) 7.dp else 4.5.dp).toPx(),
+                        center = pts[i]
+                    )
+                    if (selected) {
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.9f),
+                            radius = 2.5.dp.toPx(),
+                            center = pts[i]
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(Modifier.fillMaxWidth()) {
+                months.forEach { m ->
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        Text(
+                            "${m.month.monthValue}月",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (m.month == s.month) primary else labelColor,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun compactYuan(cents: Long): String {
+    if (cents <= 0L) return "0"
+    val yuan = cents / 100.0
+    return if (yuan >= 10000) {
+        val w = yuan / 10000
+        if (w >= 100) "%.0f万".format(w) else "%.1f万".format(w)
+    } else {
+        "%.0f".format(yuan)
     }
 }

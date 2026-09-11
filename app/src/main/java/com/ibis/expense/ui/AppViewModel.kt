@@ -7,9 +7,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ibis.expense.BudgetNotifier
 import com.ibis.expense.data.BackupManager
+import com.ibis.expense.data.Category
 import com.ibis.expense.data.CategoryTotal
 import com.ibis.expense.data.ExpenseDatabase
 import com.ibis.expense.data.ExpenseRecord
+import com.ibis.expense.data.RecordTemplate
+import com.ibis.expense.data.RecurringExpense
+import androidx.room.withTransaction
 import java.io.File
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -64,7 +68,9 @@ data class StatsState(
     val month: YearMonth,
     val totalCents: Long,
     val categoryTotals: List<CategoryTotal>,
-    val trend: List<MonthSpent>
+    val trend: List<MonthSpent>,
+    val prevMonthTotalCents: Long,
+    val prevCategoryTotals: List<CategoryTotal>
 )
 
 data class SearchState(
@@ -113,12 +119,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val statsState: StateFlow<StatsState?> = _month.flatMapLatest { month ->
+        val prev = month.minusMonths(1)
         combine(
             dao.observeCategoryTotals(month.atDay(1).toEpochDay(), month.atEndOfMonth().toEpochDay()),
-            dao.observeRange(month.minusMonths(5).atDay(1).toEpochDay(), month.atEndOfMonth().toEpochDay())
-        ) { catTotals, records ->
+            dao.observeRange(month.minusMonths(11).atDay(1).toEpochDay(), month.atEndOfMonth().toEpochDay()),
+            dao.observeCategoryTotals(prev.atDay(1).toEpochDay(), prev.atEndOfMonth().toEpochDay())
+        ) { catTotals, records, prevCatTotals ->
             val byMonth = records.groupBy { YearMonth.from(LocalDate.ofEpochDay(it.epochDay)) }
-            val trend = (5L downTo 0L).map { offset ->
+            val trend = (11L downTo 0L).map { offset ->
                 val ym = month.minusMonths(offset)
                 MonthSpent(ym, byMonth[ym]?.filter { !it.excluded }?.sumOf { it.amountCents } ?: 0L)
             }
@@ -126,10 +134,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 month = month,
                 totalCents = catTotals.sumOf { it.totalCents },
                 categoryTotals = catTotals,
-                trend = trend
+                trend = trend,
+                prevMonthTotalCents = prevCatTotals.sumOf { it.totalCents },
+                prevCategoryTotals = prevCatTotals
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val trashState: StateFlow<List<ExpenseRecord>> = dao.observeTrash()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val recurringState: StateFlow<List<RecurringExpense>> = dao.observeRecurring()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val categoriesState: StateFlow<List<Category>> = dao.observeCategories()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val templatesState: StateFlow<List<RecordTemplate>> = dao.observeTemplates()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
         viewModelScope.launch {
@@ -139,6 +161,126 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             BackupManager.backupIfNeeded(app, db)
             _lastBackup.value = BackupManager.latestBackupDate(app)
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            if (dao.countAllCategories() == 0) {
+                listOf(
+                    "餐饮" to "🍜", "交通" to "🚗", "购物" to "🛍️", "日用" to "🧴",
+                    "娱乐" to "🎮", "医疗" to "💊", "其他" to "📦"
+                ).forEachIndexed { i, (name, emoji) ->
+                    dao.insertCategory(Category(name, emoji, i + 1))
+                }
+            }
+            dao.purgeTrashOlderThan(System.currentTimeMillis() - TRASH_RETENTION_MS)
+            syncRecurringForCurrentMonth()
+        }
+    }
+
+    private suspend fun syncRecurringForCurrentMonth() {
+        val today = LocalDate.now()
+        val month = YearMonth.from(today)
+        val monthStart = month.atDay(1).toEpochDay()
+        val monthEnd = month.atEndOfMonth().toEpochDay()
+        for (r in dao.getAllRecurringOnce()) {
+            if (r.dayOfMonth > today.dayOfMonth) continue
+            if (dao.countRecurringInstance(r.id, monthStart, monthEnd) > 0) continue
+            val day = r.dayOfMonth.coerceIn(1, month.lengthOfMonth())
+            dao.insert(
+                ExpenseRecord(
+                    amountCents = r.amountCents,
+                    epochDay = LocalDate.of(today.year, today.monthValue, day).toEpochDay(),
+                    createdAt = System.currentTimeMillis(),
+                    category = r.category,
+                    note = "🔁 ${r.note}".trim(),
+                    recurringId = r.id
+                )
+            )
+        }
+    }
+
+    fun addRecurring(amountCents: Long, dayOfMonth: Int, category: String, note: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val id = dao.insertRecurring(
+                RecurringExpense(
+                    amountCents = amountCents,
+                    dayOfMonth = dayOfMonth.coerceIn(1, 28),
+                    category = category,
+                    note = note.trim()
+                )
+            )
+            val today = LocalDate.now()
+            val month = YearMonth.from(today)
+            if (dayOfMonth <= today.dayOfMonth &&
+                dao.countRecurringInstance(id, month.atDay(1).toEpochDay(), month.atEndOfMonth().toEpochDay()) == 0
+            ) {
+                dao.insert(
+                    ExpenseRecord(
+                        amountCents = amountCents,
+                        epochDay = LocalDate.of(today.year, today.monthValue, dayOfMonth.coerceIn(1, month.lengthOfMonth())).toEpochDay(),
+                        createdAt = System.currentTimeMillis(),
+                        category = category,
+                        note = "🔁 ${note.trim()}".trim(),
+                        recurringId = id
+                    )
+                )
+            }
+        }
+    }
+
+    fun deleteRecurring(id: Long) {
+        viewModelScope.launch { dao.deleteRecurringById(id) }
+    }
+
+    fun addCategory(name: String, emoji: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val trimmed = name.trim()
+            if (trimmed.isEmpty()) return@launch
+            dao.insertCategory(Category(trimmed, emoji, dao.maxCategorySort() + 1))
+        }
+    }
+
+    fun renameCategory(oldName: String, newName: String, emoji: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val trimmed = newName.trim()
+            if (trimmed.isEmpty()) return@launch
+            db.withTransaction {
+                if (trimmed != oldName) {
+                    if (dao.countCategory(trimmed) > 0) return@withTransaction
+                    dao.renameCategoryRow(oldName, trimmed, emoji)
+                    dao.reassignExpensesCategory(oldName, trimmed)
+                    dao.reassignRecurringCategory(oldName, trimmed)
+                    dao.reassignTemplatesCategory(oldName, trimmed)
+                } else {
+                    dao.renameCategoryRow(oldName, trimmed, emoji)
+                }
+            }
+        }
+    }
+
+    fun deleteCategory(name: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (name == "其他") return@launch
+            db.withTransaction {
+                dao.reassignExpensesCategory(name, "其他")
+                dao.reassignRecurringCategory(name, "其他")
+                dao.reassignTemplatesCategory(name, "其他")
+                dao.deleteCategoryRow(name)
+            }
+        }
+    }
+
+    fun saveTemplate(amountCents: Long, category: String, note: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val exists = dao.getAllTemplatesOnce().any {
+                it.amountCents == amountCents && it.category == category && it.note == note
+            }
+            if (!exists) {
+                dao.insertTemplate(RecordTemplate(amountCents = amountCents, category = category, note = note))
+            }
+        }
+    }
+
+    fun deleteTemplate(id: Long) {
+        viewModelScope.launch { dao.deleteTemplateById(id) }
     }
 
     fun addRecord(amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = false) {
@@ -173,6 +315,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteRecord(id: Long) {
+        viewModelScope.launch {
+            dao.softDelete(id, System.currentTimeMillis())
+        }
+    }
+
+    fun restoreRecord(id: Long) {
+        viewModelScope.launch {
+            dao.restore(id)
+        }
+    }
+
+    fun deleteRecordForever(id: Long) {
         viewModelScope.launch {
             dao.deleteById(id)
         }
@@ -254,6 +408,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 return@withContext Result.failure(IllegalStateException("文件中没有有效记录"))
             }
             if (replace) dao.deleteAll()
+            val known = HashSet<String>()
+            for (r in records) {
+                if (r.category in known) continue
+                known += r.category
+                if (dao.countCategory(r.category) == 0) {
+                    dao.insertCategory(Category(r.category, "📦", dao.maxCategorySort() + 1))
+                }
+            }
             dao.insertAll(records)
             Result.success(ImportOutcome(records.size, skipped))
         } catch (e: Exception) {
@@ -421,5 +583,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val KEY_BUDGET_CENTS = "budget_cents"
         const val DEFAULT_BUDGET_CENTS = 600_00L
+        private const val TRASH_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
     }
 }

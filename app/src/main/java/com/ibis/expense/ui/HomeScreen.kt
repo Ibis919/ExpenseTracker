@@ -91,6 +91,8 @@ fun HomeScreen(
     val state = vm.homeState.collectAsState().value
     val search = vm.searchState.collectAsState().value
     val query = vm.searchQuery.collectAsState().value
+    val categories by vm.categoriesState.collectAsState()
+    val emoji = remember(categories) { categories.associate { it.name to it.emoji } }
     var openRowId by remember { mutableStateOf<Long?>(null) }
     Scaffold(
         topBar = {
@@ -110,6 +112,7 @@ fun HomeScreen(
             if (s != null) {
                 SearchResults(
                     s,
+                    emoji = emoji,
                     openRowId = openRowId,
                     onOpenChange = { open -> openRowId = open },
                     onDelete = { id ->
@@ -155,6 +158,7 @@ fun HomeScreen(
                             Box(Modifier.padding(bottom = 4.dp).animateItem()) {
                                 SwipeRecordRow(
                                     record = record,
+                                    emoji = emoji,
                                     isOpen = openRowId == record.id,
                                     onOpenChange = { open ->
                                         openRowId = if (open) record.id else null
@@ -213,6 +217,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit) {
 @Composable
 private fun SearchResults(
     state: SearchState,
+    emoji: Map<String, String>,
     openRowId: Long?,
     onOpenChange: (Long?) -> Unit,
     onDelete: (Long) -> Unit,
@@ -258,6 +263,7 @@ private fun SearchResults(
                 Box(Modifier.padding(bottom = 4.dp).animateItem()) {
                     SwipeRecordRow(
                         record = record,
+                        emoji = emoji,
                         isOpen = openRowId == record.id,
                         onOpenChange = { open -> onOpenChange(if (open) record.id else null) },
                         onDelete = {
@@ -436,6 +442,7 @@ private fun DayHeader(day: DayGroup, modifier: Modifier = Modifier, showYear: Bo
 @Composable
 private fun SwipeRecordRow(
     record: UiRecord,
+    emoji: Map<String, String>,
     isOpen: Boolean,
     onOpenChange: (Boolean) -> Unit,
     onDelete: () -> Unit,
@@ -501,14 +508,14 @@ private fun SwipeRecordRow(
                 }
         ) {
             Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                RecordRowContent(record)
+                RecordRowContent(record, emoji)
             }
         }
     }
 }
 
 @Composable
-private fun RecordRowContent(record: UiRecord) {
+private fun RecordRowContent(record: UiRecord, emoji: Map<String, String>) {
     val color = if (record.overBudget) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -518,7 +525,7 @@ private fun RecordRowContent(record: UiRecord) {
                 .background(MaterialTheme.colorScheme.surface),
             contentAlignment = Alignment.Center
         ) {
-            Text(categoryEmoji(record.category), fontSize = 18.sp)
+            Text(categoryEmoji(record.category, emoji), fontSize = 18.sp)
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {

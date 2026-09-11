@@ -50,7 +50,7 @@ object UpdateManager {
     }
 
     private suspend fun fetchGithubUpdate(): UpdateInfo? {
-        val json = JSONObject(httpGet(GITHUB_LATEST_API, 10_000))
+        val json = JSONObject(httpGet(GITHUB_LATEST_API, 5_000))
         val tag = json.optString("tag_name").removePrefix("v")
         if (tag.isEmpty()) return null
         val assets = json.optJSONArray("assets") ?: JSONArray()
@@ -66,11 +66,23 @@ object UpdateManager {
         return UpdateInfo(tag, json.optString("body").take(600), apkUrl)
     }
 
+    private fun versionKey(version: String): Long {
+        val parts = version.split('.')
+        var key = 0L
+        for (i in 0 until 3) {
+            key = key * 1000 + (parts.getOrNull(i)?.toIntOrNull() ?: 0)
+        }
+        return key
+    }
+
     suspend fun checkLatest(current: String): UpdateInfo? {
-        val cdn = runCatching { fetchCdnUpdate() }.getOrNull()
-        if (cdn != null) return if (cdn.version == current) null else cdn
-        val gh = runCatching { fetchGithubUpdate() }.getOrNull() ?: return null
-        return if (gh.version == current) null else gh
+        val candidates = listOfNotNull(
+            runCatching { fetchCdnUpdate() }.getOrNull(),
+            runCatching { fetchGithubUpdate() }.getOrNull()
+        )
+        return candidates
+            .filter { versionKey(it.version) > versionKey(current) }
+            .maxByOrNull { versionKey(it.version) }
     }
 
     suspend fun downloadApk(context: Context, url: String, onProgress: (Int) -> Unit): File {
