@@ -59,31 +59,38 @@ import kotlinx.coroutines.launch
 fun CsvImportDialog(vm: AppViewModel, uri: Uri, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var isImporting by remember { mutableStateOf(false) }
 
     fun runImport(replace: Boolean) {
+        if (isImporting) return
+        isImporting = true
         scope.launch {
-            vm.importCsv(uri, replace)
-                .onSuccess { outcome ->
-                    val msg = if (outcome.skipped > 0) {
-                        "成功导入 ${outcome.imported} 条，跳过 ${outcome.skipped} 条无效记录"
-                    } else {
-                        "成功导入 ${outcome.imported} 条记录"
+            try {
+                vm.importCsv(uri, replace)
+                    .onSuccess { outcome ->
+                        val msg = if (outcome.skipped > 0) {
+                            "成功导入 ${outcome.imported} 条，跳过 ${outcome.skipped} 条无效记录"
+                        } else {
+                            "成功导入 ${outcome.imported} 条记录"
+                        }
+                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                        onDismiss()
                     }
-                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                }
-                .onFailure { e ->
-                    Toast.makeText(context, "导入失败：${e.message}", Toast.LENGTH_LONG).show()
-                }
+                    .onFailure { e ->
+                        Toast.makeText(context, "导入失败：${e.message}", Toast.LENGTH_LONG).show()
+                    }
+            } finally {
+                isImporting = false
+            }
         }
-        onDismiss()
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isImporting) onDismiss() },
         title = { Text("导入数据") },
         text = {
             Column {
-                Text("选择导入方式：")
+                Text(if (isImporting) "正在导入，请稍候…" else "选择导入方式：")
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "合并导入：保留现有记录，追加 CSV 中的记录。",
@@ -93,6 +100,7 @@ fun CsvImportDialog(vm: AppViewModel, uri: Uri, onDismiss: () -> Unit) {
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = { runImport(replace = true) },
+                    enabled = !isImporting,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
@@ -109,12 +117,12 @@ fun CsvImportDialog(vm: AppViewModel, uri: Uri, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = { runImport(replace = false) }) {
+            TextButton(onClick = { runImport(replace = false) }, enabled = !isImporting) {
                 Text("合并导入")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, enabled = !isImporting) {
                 Text("取消")
             }
         }

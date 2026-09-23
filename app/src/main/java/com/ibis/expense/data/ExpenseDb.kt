@@ -83,8 +83,8 @@ interface ExpenseDao {
     @Query("DELETE FROM expenses")
     suspend fun deleteAll()
 
-    @Update
-    suspend fun update(record: ExpenseRecord)
+    @Query("UPDATE expenses SET amountCents = :amountCents, epochDay = :epochDay, category = :category, note = :note, excluded = :excluded WHERE id = :id AND deletedAt = 0")
+    suspend fun updateDetails(id: Long, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean)
 
     @Query("DELETE FROM expenses WHERE id = :id")
     suspend fun deleteById(id: Long)

@@ -69,7 +69,7 @@
 | 最低支持 | Android 8.0（API 26） |
 | 目标版本 | API 34 |
 
-全工程 12 个 Kotlin 源文件，无第三方 UI/网络库，依赖干净。
+工程不依赖第三方 UI/网络库。
 
 ## 界面结构
 
@@ -92,7 +92,15 @@
 ./gradlew assembleRelease
 ```
 
-产物位于 `app/build/outputs/apk/release/`，debug 签名，可直接侧载安装，个人使用无需上架应用商店。
+产物位于 `app/build/outputs/apk/release/`。配置了 `keystore.properties` 时使用自有签名，否则使用 debug 签名；个人使用可直接侧载安装。
+
+## 本地验证
+
+```bash
+./gradlew testDebugUnitTest assembleDebug
+```
+
+Windows 使用 `gradlew.bat`。单元测试通过 Robolectric 运行实际 Room 数据库，覆盖周期记录编辑、CSV 特殊字符与多行备注、旧版 CSV 兼容、无效日期和导入失败回滚；无需连接手机。首次运行需下载测试依赖。
 
 ## 版本历史
 
@@ -115,6 +123,7 @@
 | v0.9.0 | 记账模板（一键带入）+ 自定义分类（增删改、自选图标）+ 消费趋势折线图（6/12 月切换） |
 | v0.9.1 | 检查更新多源并行提速（3 CDN 入口 + GitHub，典型 2-3 秒） |
 | v0.9.2 | 修复 v0.9.1 CDN 包发布事故（下载到旧版包）；APK 下载多域名自动轮换，免 VPN 更稳 |
+| v0.9.3 | 修复编辑周期账单后可能重复记账；增强 CSV 迁移与失败回滚，新增回归测试 |
 
 ## 开源协议
 

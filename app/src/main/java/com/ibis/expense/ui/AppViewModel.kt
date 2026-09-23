@@ -21,6 +21,7 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
+import java.util.concurrent.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -300,17 +301,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun updateRecord(record: UiRecord, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = record.excluded) {
         viewModelScope.launch {
-            dao.update(
-                ExpenseRecord(
-                    id = record.id,
-                    amountCents = amountCents,
-                    epochDay = epochDay,
-                    createdAt = record.createdAt,
-                    category = category,
-                    note = note.trim(),
-                    excluded = excluded
-                )
-            )
+            dao.updateDetails(record.id, amountCents, epochDay, category, note.trim(), excluded)
         }
     }
 
@@ -378,20 +369,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun importCsv(uri: Uri, replace: Boolean): Result<ImportOutcome> = withContext(Dispatchers.IO) {
         try {
             val app = getApplication<Application>()
-            val lines = app.contentResolver.openInputStream(uri)
+            val content = app.contentResolver.openInputStream(uri)
                 ?.bufferedReader(Charsets.UTF_8)
-                ?.readLines()
+                ?.use { it.readText() }
                 ?: return@withContext Result.failure(IllegalStateException("无法读取文件"))
-            val dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+            val dateFormat = DateTimeFormatter.ISO_LOCAL_DATE
             val records = mutableListOf<ExpenseRecord>()
             var skipped = 0
-            for (raw in lines) {
-                val line = raw.trim().removePrefix("\uFEFF")
-                if (line.isEmpty() || line.startsWith("日期")) continue
-                val fields = parseCsvLine(line)
-                val date = runCatching { LocalDate.parse(fields.getOrNull(0), dateFormat) }.getOrNull()
+            for (fields in parseCsv(content)) {
+                if (fields.firstOrNull()?.trim() == "日期") continue
+                val date = runCatching { LocalDate.parse(fields.getOrNull(0)?.trim(), dateFormat) }.getOrNull()
                 val cents = fields.getOrNull(1)?.let { parseAmountToCents(it) }
-                if (date == null || cents == null || fields.getOrNull(2).isNullOrBlank()) {
+                if (fields.size !in 3..5 || date == null || cents == null || fields.getOrNull(2).isNullOrBlank()) {
                     skipped++
                     continue
                 }
@@ -407,45 +396,73 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (records.isEmpty()) {
                 return@withContext Result.failure(IllegalStateException("文件中没有有效记录"))
             }
-            if (replace) dao.deleteAll()
-            val known = HashSet<String>()
-            for (r in records) {
-                if (r.category in known) continue
-                known += r.category
-                if (dao.countCategory(r.category) == 0) {
-                    dao.insertCategory(Category(r.category, "📦", dao.maxCategorySort() + 1))
+            db.withTransaction {
+                if (replace) dao.deleteAll()
+                val known = HashSet<String>()
+                for (r in records) {
+                    if (!known.add(r.category)) continue
+                    if (dao.countCategory(r.category) == 0) {
+                        dao.insertCategory(Category(r.category, "📦", dao.maxCategorySort() + 1))
+                    }
                 }
+                dao.insertAll(records)
             }
-            dao.insertAll(records)
             Result.success(ImportOutcome(records.size, skipped))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    private fun parseCsvLine(line: String): List<String> {
+    private fun parseCsv(content: String): List<List<String>> {
+        val rows = mutableListOf<List<String>>()
         val fields = mutableListOf<String>()
-        val sb = StringBuilder()
+        val field = StringBuilder()
         var inQuotes = false
+        var afterQuotes = false
+
+        fun finishField() {
+            fields.add(field.toString())
+            field.clear()
+            afterQuotes = false
+        }
+
+        fun finishRow() {
+            finishField()
+            if (fields.any { it.isNotBlank() }) rows.add(fields.toList())
+            fields.clear()
+        }
+
         var i = 0
-        while (i < line.length) {
-            val c = line[i]
+        val text = content.removePrefix("\uFEFF")
+        while (i < text.length) {
+            val c = text[i]
             when {
-                inQuotes && c == '"' && i + 1 < line.length && line[i + 1] == '"' -> {
-                    sb.append('"')
+                inQuotes && c == '"' && i + 1 < text.length && text[i + 1] == '"' -> {
+                    field.append('"')
                     i++
                 }
-                c == '"' -> inQuotes = !inQuotes
-                c == ',' && !inQuotes -> {
-                    fields.add(sb.toString())
-                    sb.clear()
+                inQuotes && c == '"' -> {
+                    inQuotes = false
+                    afterQuotes = true
                 }
-                else -> sb.append(c)
+                inQuotes -> field.append(c)
+                c == '"' && field.isEmpty() && !afterQuotes -> inQuotes = true
+                c == '"' -> throw IllegalArgumentException("CSV 引号格式错误")
+                c == ',' -> finishField()
+                c == '\r' || c == '\n' -> {
+                    finishRow()
+                    if (c == '\r' && i + 1 < text.length && text[i + 1] == '\n') i++
+                }
+                afterQuotes && !c.isWhitespace() -> throw IllegalArgumentException("CSV 引号格式错误")
+                !afterQuotes -> field.append(c)
             }
             i++
         }
-        fields.add(sb.toString())
-        return fields
+        if (inQuotes) throw IllegalArgumentException("CSV 引号未闭合")
+        if (field.isNotEmpty() || fields.isNotEmpty() || afterQuotes) finishRow()
+        return rows
     }
 
     private fun buildCsv(records: List<ExpenseRecord>): String = buildString {
@@ -455,7 +472,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         for (r in records) {
             append(LocalDate.ofEpochDay(r.epochDay).format(dateFormat)).append(',')
             append(formatAmount(r.amountCents)).append(',')
-            append(r.category).append(',')
+            append('"').append(r.category.replace("\"", "\"\"")).append('"').append(',')
             append('"').append(r.note.replace("\"", "\"\"")).append('"').append(',')
             append(if (r.excluded) "是" else "否")
             appendLine()
