@@ -8,6 +8,7 @@ import com.ibis.expense.data.ExpenseDatabase
 import com.ibis.expense.data.ExpenseRecord
 import java.io.File
 import java.time.LocalDate
+import java.time.YearMonth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -26,10 +27,12 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.SQLiteMode
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
+@SQLiteMode(SQLiteMode.Mode.NATIVE)
 class AppViewModelTest {
     private lateinit var app: Application
     private lateinit var db: ExpenseDatabase
@@ -84,6 +87,34 @@ class AppViewModelTest {
         assertEquals("修改后的备注", updated.note)
         assertTrue(updated.excluded)
         assertEquals(1, db.dao().countRecurringInstance(42, day, day))
+    }
+
+    @Test
+    fun statsCategoryRecordsMatchTheSelectedMonthsTotals() = runBlocking {
+        store.clear()
+        db.dao().insert(record())
+        db.dao().insert(record().copy(amountCents = 766, createdAt = 2_000, note = "晚餐"))
+        db.dao().insert(record().copy(amountCents = 500, category = "交通"))
+        db.dao().insert(record().copy(amountCents = 9_000, excluded = true))
+        db.dao().insert(record().copy(amountCents = 8_000, deletedAt = 1))
+        db.dao().insert(record().copy(
+            amountCents = 7_777,
+            epochDay = YearMonth.now().minusMonths(1).atDay(1).toEpochDay()
+        ))
+        vm = AppViewModel(app)
+        store.put("test", vm)
+
+        val stats = withTimeout(5_000) {
+            vm.statsState.first { it?.totalCents == 2_500L }!!
+        }
+        val food = stats.monthRecords.filter { it.category == "餐饮" }
+
+        assertEquals(YearMonth.now(), stats.month)
+        assertEquals(2_000L, stats.categoryTotals.single { it.category == "餐饮" }.totalCents)
+        assertEquals(3, stats.monthRecords.size)
+        assertEquals(listOf("晚餐", "原始记录"), food.map { it.note })
+        assertEquals(listOf(766L, 1_234L), food.map { it.amountCents })
+        assertTrue(food.all { it.epochDay == day })
     }
 
     @Test

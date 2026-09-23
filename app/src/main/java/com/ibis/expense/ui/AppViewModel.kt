@@ -69,6 +69,7 @@ data class StatsState(
     val month: YearMonth,
     val totalCents: Long,
     val categoryTotals: List<CategoryTotal>,
+    val monthRecords: List<ExpenseRecord>,
     val trend: List<MonthSpent>,
     val prevMonthTotalCents: Long,
     val prevCategoryTotals: List<CategoryTotal>
@@ -135,6 +136,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 month = month,
                 totalCents = catTotals.sumOf { it.totalCents },
                 categoryTotals = catTotals,
+                monthRecords = byMonth[month].orEmpty().filterNot { it.excluded },
                 trend = trend,
                 prevMonthTotalCents = prevCatTotals.sumOf { it.totalCents },
                 prevCategoryTotals = prevCatTotals

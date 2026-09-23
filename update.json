@@ -1,5 +1,5 @@
 {
-  "version": "0.9.3",
-  "notes": "修复编辑周期性支出生成的记录后可能重复记账；CSV 导入导出支持分类和备注中的逗号、引号与换行，清空导入失败时自动回滚；导入完成前保持进度提示，避免任务被过早取消。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.9.3/apk/latest.apk"
+  "version": "0.9.4",
+  "notes": "修正消费趋势 6 月和 12 月切换按钮的选中框；点击分类统计可查看当月该类别每笔消费的日期、金额和备注。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.9.4/apk/latest.apk"
 }

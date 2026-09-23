@@ -4,8 +4,10 @@ package com.ibis.expense.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,9 +25,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -35,12 +41,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -59,6 +67,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ibis.expense.data.ExpenseRecord
+import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import kotlin.math.min
@@ -89,6 +99,7 @@ fun StatsScreen(vm: AppViewModel) {
                 CircularProgressIndicator()
             }
         } else {
+            var selectedCategory by remember(s.month) { mutableStateOf<String?>(null) }
             Column(
                 Modifier
                     .fillMaxSize()
@@ -108,13 +119,26 @@ fun StatsScreen(vm: AppViewModel) {
                 } else {
                     DonutCard(s)
                     Spacer(Modifier.height(16.dp))
-                    LegendCard(s, emoji)
+                    LegendCard(s, emoji, onCategoryClick = { selectedCategory = it })
                 }
                 Spacer(Modifier.height(16.dp))
                 CompareCard(s, emoji)
                 Spacer(Modifier.height(16.dp))
                 TrendCard(s)
                 Spacer(Modifier.height(24.dp))
+            }
+            selectedCategory?.let { category ->
+                val total = s.categoryTotals.firstOrNull { it.category == category }
+                if (total != null) {
+                    CategoryDetailsDialog(
+                        month = s.month,
+                        category = category,
+                        categoryEmoji = categoryEmoji(category, emoji),
+                        totalCents = total.totalCents,
+                        records = s.monthRecords.filter { it.category == category },
+                        onDismiss = { selectedCategory = null }
+                    )
+                }
             }
         }
     }
@@ -192,7 +216,7 @@ private fun DonutCard(s: StatsState) {
 }
 
 @Composable
-private fun LegendCard(s: StatsState, emoji: Map<String, String>) {
+private fun LegendCard(s: StatsState, emoji: Map<String, String>, onCategoryClick: (String) -> Unit) {
     Card(
         Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -203,7 +227,7 @@ private fun LegendCard(s: StatsState, emoji: Map<String, String>) {
                 val color = ChartColors[index % ChartColors.size]
                 val percent = ct.totalCents * 100f / s.totalCents
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    Modifier.fillMaxWidth().clickable { onCategoryClick(ct.category) }.padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(Modifier.size(10.dp).clip(CircleShape).background(color))
@@ -221,10 +245,64 @@ private fun LegendCard(s: StatsState, emoji: Map<String, String>) {
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold
                     )
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun CategoryDetailsDialog(
+    month: YearMonth,
+    category: String,
+    categoryEmoji: String,
+    totalCents: Long,
+    records: List<ExpenseRecord>,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("$categoryEmoji $category · ${month.format(DateTimeFormatter.ofPattern("yyyy年M月"))}") },
+        text = {
+            Column {
+                Text(
+                    "共 ${records.size} 笔 · ¥${formatAmount(totalCents)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                    items(records, key = { it.id }) { record ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(
+                                    LocalDate.ofEpochDay(record.epochDay)
+                                        .format(DateTimeFormatter.ISO_LOCAL_DATE),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    "¥${formatAmount(record.amountCents)}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            Text(
+                                record.note.ifBlank { "无备注" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
 }
 
 @Composable
@@ -343,6 +421,7 @@ private fun TrendCard(s: StatsState) {
                         selected = range == r,
                         onClick = { range = r },
                         label = { Text("${r}月") },
+                        border = if (range == r) BorderStroke(1.dp, primary) else null,
                         modifier = Modifier.padding(start = 4.dp)
                     )
                 }
