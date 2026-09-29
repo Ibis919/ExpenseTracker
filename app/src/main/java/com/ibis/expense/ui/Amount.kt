@@ -15,7 +15,7 @@ fun centsToInput(cents: Long): String {
     }
 }
 
-fun parseAmountToCents(input: String): Long? {
+fun parseAmountToCents(input: String, allowZero: Boolean = false): Long? {
     val text = input.trim()
     if (!Regex("""^\d{1,7}(\.\d{1,2})?$""").matches(text)) return null
     val dot = text.indexOf('.')
@@ -27,5 +27,5 @@ fun parseAmountToCents(input: String): Long? {
         else -> fraction.substring(0, 2).toLong()
     }
     val result = yuan * 100 + fractionCents
-    return if (result > 0) result else null
+    return if (result > 0 || (allowZero && result == 0L)) result else null
 }

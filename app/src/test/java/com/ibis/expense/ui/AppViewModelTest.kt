@@ -2,10 +2,13 @@ package com.ibis.expense.ui
 
 import android.app.Application
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
+import androidx.room.Room
 import androidx.lifecycle.ViewModelStore
 import com.ibis.expense.data.ExpenseDatabase
 import com.ibis.expense.data.ExpenseRecord
+import com.ibis.expense.data.MIGRATION_4_5
 import java.io.File
 import java.time.LocalDate
 import java.time.YearMonth
@@ -122,7 +125,8 @@ class AppViewModelTest {
         val original = record().copy(
             category = "餐饮,\"聚餐\"",
             note = "第一行,\"AA\"\r\n第二行\n第三行",
-            excluded = true
+            excluded = true,
+            paymentMethod = PaymentMethod.ALIPAY
         )
         db.dao().insert(original)
         val csv = vm.exportCsvForShare()!!
@@ -136,6 +140,7 @@ class AppViewModelTest {
         assertEquals(original.category, imported.category)
         assertEquals(original.note, imported.note)
         assertTrue(imported.excluded)
+        assertEquals(PaymentMethod.ALIPAY, imported.paymentMethod)
     }
 
     @Test
@@ -151,6 +156,77 @@ class AppViewModelTest {
         val imported = records.single { it.note == "早餐,咖啡" }
         assertEquals(10L, imported.amountCents)
         assertEquals(false, imported.excluded)
+        assertEquals("", imported.paymentMethod)
+    }
+
+    @Test
+    fun accountBalanceTracksPaymentEditsExcludedExpensesAndTrash() = runBlocking {
+        db.dao().insert(record()) // Upgraded records are not assigned to an account.
+        vm.addRecord(1_200, day, "餐饮", "first")
+        withTimeout(5_000) {
+            while (db.dao().getAllOnce().size != 2) delay(10)
+        }
+
+        vm.setAccountBalance(PaymentMethod.WECHAT, 10_000)
+        vm.setAccountBalance(PaymentMethod.ALIPAY, 5_000)
+        withTimeout(5_000) {
+            vm.accountBalances.first { it[PaymentMethod.WECHAT] == 10_000L && it[PaymentMethod.ALIPAY] == 5_000L }
+        }
+
+        vm.addRecord(200, day, "餐饮", "second", excluded = true)
+        withTimeout(5_000) {
+            vm.accountBalances.first { it[PaymentMethod.WECHAT] == 9_800L }
+        }
+        val second = withTimeout(5_000) {
+            vm.homeState.first { state ->
+                state?.days?.flatMap { it.records }?.any { it.note == "second" } == true
+            }!!.days.flatMap { it.records }.single { it.note == "second" }
+        }
+        vm.updateRecord(second, 300, day, "餐饮", "second", paymentMethod = PaymentMethod.ALIPAY)
+        withTimeout(5_000) {
+            vm.accountBalances.first {
+                it[PaymentMethod.WECHAT] == 10_000L && it[PaymentMethod.ALIPAY] == 4_700L
+            }
+        }
+        vm.deleteRecord(second.id)
+        withTimeout(5_000) {
+            vm.accountBalances.first { it[PaymentMethod.ALIPAY] == 5_000L }
+        }
+        vm.restoreRecord(second.id)
+        withTimeout(5_000) {
+            vm.accountBalances.first { it[PaymentMethod.ALIPAY] == 4_700L }
+        }
+        Unit
+    }
+
+    @Test
+    fun migrationKeepsOldRecordsUnassignedToAccounts() = runBlocking {
+        val name = "migration-4-to-5.db"
+        app.deleteDatabase(name)
+        SQLiteDatabase.openOrCreateDatabase(app.getDatabasePath(name), null).use { old ->
+            old.execSQL("CREATE TABLE expenses (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "amountCents INTEGER NOT NULL, epochDay INTEGER NOT NULL, createdAt INTEGER NOT NULL, " +
+                "category TEXT NOT NULL, note TEXT NOT NULL, excluded INTEGER NOT NULL, " +
+                "deletedAt INTEGER NOT NULL, recurringId INTEGER NOT NULL)")
+            old.execSQL("CREATE TABLE recurring_expenses (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "amountCents INTEGER NOT NULL, dayOfMonth INTEGER NOT NULL, category TEXT NOT NULL, note TEXT NOT NULL)")
+            old.execSQL("CREATE TABLE categories (name TEXT NOT NULL PRIMARY KEY, emoji TEXT NOT NULL, sortOrder INTEGER NOT NULL)")
+            old.execSQL("CREATE TABLE templates (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "amountCents INTEGER NOT NULL, category TEXT NOT NULL, note TEXT NOT NULL)")
+            old.execSQL("INSERT INTO expenses VALUES (1, 1234, $day, 1000, '餐饮', '旧账', 0, 0, 0)")
+            old.version = 4
+        }
+        val migrated = Room.databaseBuilder(app, ExpenseDatabase::class.java, name)
+            .addMigrations(MIGRATION_4_5).build()
+        try {
+            val record = migrated.dao().getAllOnce().single()
+            assertEquals("旧账", record.note)
+            assertEquals("", record.paymentMethod)
+            assertTrue(migrated.dao().observeAccountBalances().first().isEmpty())
+        } finally {
+            migrated.close()
+            app.deleteDatabase(name)
+        }
     }
 
     @Test

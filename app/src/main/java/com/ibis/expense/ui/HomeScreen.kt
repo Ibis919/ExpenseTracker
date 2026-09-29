@@ -43,15 +43,18 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -70,6 +73,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -91,9 +95,12 @@ fun HomeScreen(
     val state = vm.homeState.collectAsState().value
     val search = vm.searchState.collectAsState().value
     val query = vm.searchQuery.collectAsState().value
+    val accountBalances by vm.accountBalances.collectAsState()
     val categories by vm.categoriesState.collectAsState()
     val emoji = remember(categories) { categories.associate { it.name to it.emoji } }
     var openRowId by remember { mutableStateOf<Long?>(null) }
+    var editingAccount by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -128,6 +135,15 @@ fun HomeScreen(
                         .padding(horizontal = 16.dp)
                 ) {
                     item(key = "balance") { BalanceCard(state, onPrev = vm::previousMonth, onNext = vm::nextMonth) }
+                    item(key = "accounts") {
+                        Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                            AccountCard(PaymentMethod.WECHAT, accountBalances[PaymentMethod.WECHAT],
+                                Modifier.weight(1f)) { editingAccount = PaymentMethod.WECHAT }
+                            Spacer(Modifier.width(8.dp))
+                            AccountCard(PaymentMethod.ALIPAY, accountBalances[PaymentMethod.ALIPAY],
+                                Modifier.weight(1f)) { editingAccount = PaymentMethod.ALIPAY }
+                        }
+                    }
                     if (state.days.isEmpty()) {
                         item(key = "empty") {
                             Column(
@@ -179,6 +195,60 @@ fun HomeScreen(
                     CircularProgressIndicator()
                 }
             }
+        }
+    }
+
+    editingAccount?.let { method ->
+        val current = accountBalances[method]
+        var input by remember(method) { mutableStateOf(current?.takeIf { it >= 0 }?.let(::centsToInput) ?: "") }
+        val cents = parseAmountToCents(input, allowZero = true)
+        AlertDialog(
+            onDismissRequest = { editingAccount = null },
+            title = { Text("设置${method}余额") },
+            text = {
+                Column {
+                    Text("填写当前实际余额。此后用${method}记账会自动扣减。")
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it.filter { c -> c.isDigit() || c == '.' } },
+                        label = { Text("当前余额（元）") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        isError = input.isNotEmpty() && cents == null,
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        vm.setAccountBalance(method, cents!!)
+                        editingAccount = null
+                    }
+                }, enabled = cents != null) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingAccount = null }) { Text("取消") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun AccountCard(method: String, cents: Long?, modifier: Modifier, onClick: () -> Unit) {
+    Card(onClick = onClick, modifier = modifier) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PaymentIcon(method)
+                Spacer(Modifier.width(6.dp))
+                Text("${method}余额", style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                cents?.let { (if (it < 0) "-¥" else "¥") + formatAmount(abs(it)) } ?: "点击设置",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -554,6 +624,13 @@ private fun RecordRowContent(record: UiRecord, emoji: Map<String, String>) {
                     text = record.note,
                     style = MaterialTheme.typography.bodySmall,
                     color = if (record.overBudget) color else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (record.paymentMethod.isNotEmpty()) {
+                Text(
+                    text = record.paymentMethod,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

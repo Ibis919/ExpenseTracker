@@ -25,7 +25,14 @@ data class ExpenseRecord(
     val note: String,
     val excluded: Boolean = false,
     val deletedAt: Long = 0,
-    val recurringId: Long = 0
+    val recurringId: Long = 0,
+    val paymentMethod: String = ""
+)
+
+@Entity(tableName = "account_balances")
+data class AccountBalance(
+    @PrimaryKey val method: String,
+    val baseCents: Long
 )
 
 @Entity(tableName = "recurring_expenses")
@@ -83,8 +90,17 @@ interface ExpenseDao {
     @Query("DELETE FROM expenses")
     suspend fun deleteAll()
 
-    @Query("UPDATE expenses SET amountCents = :amountCents, epochDay = :epochDay, category = :category, note = :note, excluded = :excluded WHERE id = :id AND deletedAt = 0")
-    suspend fun updateDetails(id: Long, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean)
+    @Query("UPDATE expenses SET amountCents = :amountCents, epochDay = :epochDay, category = :category, note = :note, excluded = :excluded, paymentMethod = :paymentMethod WHERE id = :id AND deletedAt = 0")
+    suspend fun updateDetails(id: Long, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean, paymentMethod: String)
+
+    @Query("SELECT * FROM account_balances")
+    fun observeAccountBalances(): Flow<List<AccountBalance>>
+
+    @Query("SELECT IFNULL(SUM(amountCents), 0) FROM expenses WHERE paymentMethod = :method AND deletedAt = 0")
+    suspend fun spentFromAccount(method: String): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAccountBalance(balance: AccountBalance)
 
     @Query("DELETE FROM expenses WHERE id = :id")
     suspend fun deleteById(id: Long)
@@ -214,9 +230,20 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE expenses ADD COLUMN paymentMethod TEXT NOT NULL DEFAULT ''")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS account_balances (" +
+                "method TEXT NOT NULL PRIMARY KEY, " +
+                "baseCents INTEGER NOT NULL)"
+        )
+    }
+}
+
 @Database(
-    entities = [ExpenseRecord::class, RecurringExpense::class, Category::class, RecordTemplate::class],
-    version = 4,
+    entities = [ExpenseRecord::class, RecurringExpense::class, Category::class, RecordTemplate::class, AccountBalance::class],
+    version = 5,
     exportSchema = false
 )
 abstract class ExpenseDatabase : RoomDatabase() {
@@ -225,7 +252,7 @@ abstract class ExpenseDatabase : RoomDatabase() {
     companion object {
         fun build(context: Context): ExpenseDatabase =
             Room.databaseBuilder(context, ExpenseDatabase::class.java, "expenses.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         db.execSQL(SEED_CATEGORIES)

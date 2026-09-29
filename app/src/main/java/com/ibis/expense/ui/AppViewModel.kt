@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ibis.expense.BudgetNotifier
+import com.ibis.expense.data.AccountBalance
 import com.ibis.expense.data.BackupManager
 import com.ibis.expense.data.Category
 import com.ibis.expense.data.CategoryTotal
@@ -42,7 +43,8 @@ data class UiRecord(
     val category: String,
     val note: String,
     val overBudget: Boolean,
-    val excluded: Boolean
+    val excluded: Boolean,
+    val paymentMethod: String
 )
 
 data class DayGroup(
@@ -155,6 +157,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     val templatesState: StateFlow<List<RecordTemplate>> = dao.observeTemplates()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val accountBalances: StateFlow<Map<String, Long>> = combine(
+        dao.observeAccountBalances(), dao.observeAll()
+    ) { bases, records ->
+        bases.associate { balance ->
+            balance.method to (balance.baseCents - records
+                .filter { it.paymentMethod == balance.method }
+                .sumOf { it.amountCents })
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     init {
         viewModelScope.launch {
@@ -286,7 +298,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { dao.deleteTemplateById(id) }
     }
 
-    fun addRecord(amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = false) {
+    fun addRecord(amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = false, paymentMethod: String = PaymentMethod.WECHAT) {
         viewModelScope.launch {
             dao.insert(
                 ExpenseRecord(
@@ -295,15 +307,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     createdAt = System.currentTimeMillis(),
                     category = category,
                     note = note.trim(),
-                    excluded = excluded
+                    excluded = excluded,
+                    paymentMethod = paymentMethod
                 )
             )
         }
     }
 
-    fun updateRecord(record: UiRecord, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = record.excluded) {
+    fun updateRecord(record: UiRecord, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = record.excluded, paymentMethod: String = record.paymentMethod) {
         viewModelScope.launch {
-            dao.updateDetails(record.id, amountCents, epochDay, category, note.trim(), excluded)
+            dao.updateDetails(record.id, amountCents, epochDay, category, note.trim(), excluded, paymentMethod)
+        }
+    }
+
+    suspend fun setAccountBalance(method: String, cents: Long) {
+        withContext(Dispatchers.IO) {
+            db.withTransaction {
+                dao.upsertAccountBalance(AccountBalance(method, cents + dao.spentFromAccount(method)))
+            }
         }
     }
 
@@ -382,7 +403,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (fields.firstOrNull()?.trim() == "日期") continue
                 val date = runCatching { LocalDate.parse(fields.getOrNull(0)?.trim(), dateFormat) }.getOrNull()
                 val cents = fields.getOrNull(1)?.let { parseAmountToCents(it) }
-                if (fields.size !in 3..5 || date == null || cents == null || fields.getOrNull(2).isNullOrBlank()) {
+                val paymentMethod = fields.getOrElse(5) { "" }.trim()
+                if (fields.size !in 3..6 || date == null || cents == null || fields.getOrNull(2).isNullOrBlank() ||
+                    paymentMethod !in PaymentMethod.ALL_WITH_LEGACY) {
                     skipped++
                     continue
                 }
@@ -392,7 +415,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     createdAt = System.currentTimeMillis(),
                     category = fields[2].trim(),
                     note = fields.getOrElse(3) { "" }.trim(),
-                    excluded = fields.getOrElse(4) { "" }.trim() == "是"
+                    excluded = fields.getOrElse(4) { "" }.trim() == "是",
+                    paymentMethod = paymentMethod
                 )
             }
             if (records.isEmpty()) {
@@ -469,14 +493,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun buildCsv(records: List<ExpenseRecord>): String = buildString {
         append('\uFEFF')
-        appendLine("日期,金额,分类,备注,代付")
+        appendLine("日期,金额,分类,备注,代付,支付方式")
         val dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         for (r in records) {
             append(LocalDate.ofEpochDay(r.epochDay).format(dateFormat)).append(',')
             append(formatAmount(r.amountCents)).append(',')
             append('"').append(r.category.replace("\"", "\"\"")).append('"').append(',')
             append('"').append(r.note.replace("\"", "\"\"")).append('"').append(',')
-            append(if (r.excluded) "是" else "否")
+            append(if (r.excluded) "是" else "否").append(',')
+            append(r.paymentMethod)
             appendLine()
         }
     }
@@ -525,7 +550,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         category = it.category,
                         note = it.note,
                         overBudget = false,
-                        excluded = it.excluded
+                        excluded = it.excluded,
+                        paymentMethod = it.paymentMethod
                     )
                 }
             )
@@ -584,7 +610,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         category = it.category,
                         note = it.note,
                         overBudget = over[it.id] == true,
-                        excluded = it.excluded
+                        excluded = it.excluded,
+                        paymentMethod = it.paymentMethod
                     )
                 }
             )

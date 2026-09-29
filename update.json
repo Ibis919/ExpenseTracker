@@ -1,5 +1,5 @@
 {
-  "version": "0.9.4",
-  "notes": "修正消费趋势 6 月和 12 月切换按钮的选中框；点击分类统计可查看当月该类别每笔消费的日期、金额和备注。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.9.4/apk/latest.apk"
+  "version": "0.10.0",
+  "notes": "打开即进入记一笔，保存后返回账本；新增微信和支付宝支付方式及可直接设置的账户余额，记账后对应余额自动扣减。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.10.0/apk/latest.apk"
 }

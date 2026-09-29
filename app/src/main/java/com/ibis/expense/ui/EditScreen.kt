@@ -70,6 +70,7 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit) {
     var selectedCategory by remember { mutableStateOf(initial?.category) }
     var note by remember { mutableStateOf(initial?.note ?: "") }
     var excluded by remember { mutableStateOf(initial?.excluded ?: false) }
+    var paymentMethod by remember { mutableStateOf(initial?.paymentMethod ?: PaymentMethod.WECHAT) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var deleteTemplateTarget by remember { mutableStateOf<RecordTemplate?>(null) }
@@ -148,6 +149,22 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit) {
                 Text("📅  ${LocalDate.ofEpochDay(epochDay).format(DateTimeFormatter.ofPattern("yyyy年M月d日"))}")
             }
             Spacer(Modifier.height(16.dp))
+            Text("支付方式", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(PaymentMethod.WECHAT, PaymentMethod.ALIPAY).forEach { method ->
+                    FilterChip(
+                        selected = paymentMethod == method,
+                        onClick = { paymentMethod = method },
+                        label = { Text(method) },
+                        leadingIcon = { PaymentIcon(method) }
+                    )
+                }
+            }
+            if (paymentMethod.isEmpty()) {
+                Text("旧记录未关联余额，选择支付方式后才会扣减", style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(16.dp))
             Text("分类", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(8.dp))
             FlowRow(
@@ -192,9 +209,9 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit) {
                     val category = effectiveCategory
                     if (cents != null && category != null) {
                         if (initial == null) {
-                            vm.addRecord(cents, epochDay, category, note, excluded)
+                            vm.addRecord(cents, epochDay, category, note, excluded, paymentMethod)
                         } else {
-                            vm.updateRecord(initial, cents, epochDay, category, note, excluded)
+                            vm.updateRecord(initial, cents, epochDay, category, note, excluded, paymentMethod)
                         }
                         onDone()
                     }
