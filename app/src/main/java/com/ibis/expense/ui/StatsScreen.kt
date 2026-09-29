@@ -74,13 +74,13 @@ import java.time.format.DateTimeFormatter
 import kotlin.math.min
 
 private val ChartColors = listOf(
-    Color(0xFF006C4C),
-    Color(0xFF2E8B8C),
-    Color(0xFFD4A017),
-    Color(0xFF8E5572),
-    Color(0xFF5A6B7A),
-    Color(0xFFB4553F),
-    Color(0xFF4C6357)
+    Color(0xFF0072B2),
+    Color(0xFFE69F00),
+    Color(0xFF009E73),
+    Color(0xFFCC79A7),
+    Color(0xFF56B4E9),
+    Color(0xFFD55E00),
+    Color(0xFF7F7F7F)
 )
 
 @Composable
@@ -420,8 +420,8 @@ private fun TrendCard(s: StatsState) {
                     FilterChip(
                         selected = range == r,
                         onClick = { range = r },
-                        label = { Text("${r}月") },
-                        border = if (range == r) BorderStroke(1.dp, primary) else null,
+                        label = { Text(if (range == r) "✓ ${r}月" else "${r}月") },
+                        border = if (range == r) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null,
                         modifier = Modifier.padding(start = 4.dp)
                     )
                 }

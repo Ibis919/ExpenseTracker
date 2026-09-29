@@ -2,6 +2,7 @@
 
 package com.ibis.expense.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -186,7 +187,8 @@ private fun CategoryEditDialog(
                         FilterChip(
                             selected = emoji == e,
                             onClick = { emoji = e },
-                            label = { Text(e) }
+                            label = { Text(if (emoji == e) "✓ $e" else e) },
+                            border = if (emoji == e) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null
                         )
                     }
                 }

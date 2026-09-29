@@ -2,6 +2,7 @@
 
 package com.ibis.expense.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -191,7 +192,8 @@ private fun AddRecurringDialog(
                         FilterChip(
                             selected = category == c.name,
                             onClick = { category = c.name },
-                            label = { Text("${categoryEmoji(c.name, emoji)} ${c.name}") }
+                            label = { Text("${if (category == c.name) "✓ " else ""}${categoryEmoji(c.name, emoji)} ${c.name}") },
+                            border = if (category == c.name) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null
                         )
                     }
                 }

@@ -611,10 +611,22 @@ private fun RecordRowContent(record: UiRecord, emoji: Map<String, String>) {
                     Text(
                         "代付",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFFB45309),
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0x1DB45309))
+                            .background(MaterialTheme.colorScheme.secondaryContainer)
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                    )
+                }
+                if (record.overBudget) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "超预算",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.errorContainer)
                             .padding(horizontal = 6.dp, vertical = 1.dp)
                     )
                 }

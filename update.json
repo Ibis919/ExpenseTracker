@@ -1,5 +1,5 @@
 {
-  "version": "0.10.0",
-  "notes": "打开即进入记一笔，保存后返回账本；新增微信和支付宝支付方式及可直接设置的账户余额，记账后对应余额自动扣减。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.10.0/apk/latest.apk"
+  "version": "0.10.1",
+  "notes": "修正微信/支付宝选中框显示在未选中项的问题；选择按钮增加勾选和高对比边框，超预算记录增加文字标记，优化统计分类配色。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.10.1/apk/latest.apk"
 }

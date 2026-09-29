@@ -2,6 +2,7 @@
 
 package com.ibis.expense.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -130,7 +131,7 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit) {
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.displayMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
                     )
                 },
                 isError = amount.isNotBlank() && amountCents == null,
@@ -156,8 +157,9 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit) {
                     FilterChip(
                         selected = paymentMethod == method,
                         onClick = { paymentMethod = method },
-                        label = { Text(method) },
-                        leadingIcon = { PaymentIcon(method) }
+                        label = { Text(if (paymentMethod == method) "✓ $method" else method) },
+                        leadingIcon = { PaymentIcon(method) },
+                        border = if (paymentMethod == method) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null
                     )
                 }
             }
@@ -175,7 +177,8 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit) {
                     FilterChip(
                         selected = effectiveCategory == c.name,
                         onClick = { selectedCategory = c.name },
-                        label = { Text("${c.emoji} ${c.name}") }
+                        label = { Text("${if (effectiveCategory == c.name) "✓ " else ""}${c.emoji} ${c.name}") },
+                        border = if (effectiveCategory == c.name) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null
                     )
                 }
             }
@@ -192,6 +195,7 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit) {
                 selected = excluded,
                 onClick = { excluded = !excluded },
                 label = { Text(if (excluded) "🤝 代付：不计入我的开销" else "🤝 帮别人代付（不计入我的开销）") },
+                border = if (excluded) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null,
                 modifier = Modifier.fillMaxWidth()
             )
             if (excluded) {
