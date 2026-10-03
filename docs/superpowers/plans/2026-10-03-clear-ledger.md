@@ -101,5 +101,6 @@ Files: `Theme.kt`、主屏布局、README、版本、update.json、APK。
 - [x] 最终全套 53 项测试通过，覆盖周期生成状态、编辑查询保留、退款 CSV 引用与完整备份失败保护。
 - [x] SDK 34 原生 Compose 验收保存返回账本、统计、深色模式与 200% 字体关键控件；布局截图已人工查看。
 - [x] v0.11.0 / versionCode 22 正式签名构建与 release 必要 lint 通过；APK 11,084,986 字节，旧正式证书保持一致，仓库 APK 与构建包 SHA256 相同。
-- [ ] GitHub Release 与 CDN 实际下载校验。
+- [x] 已推送 main 并发布 GitHub v0.11.0 正式 Release；GitHub、cdn、fastly、gcore 四份 APK 实际下载 SHA256 全部一致，三条缓存刷新请求成功且未被限流。
+- 发布后 cdn/fastly 清单已返回 v0.11.0；gcore 清单仍缓存 v0.10.1，但版本标签 APK 正确。应用并行更新源会取最新版本，GitHub latest 已核对为 v0.11.0。
 - 真机系统键盘与无障碍朗读尚未验收；原生渲染测试不是手机实测。
