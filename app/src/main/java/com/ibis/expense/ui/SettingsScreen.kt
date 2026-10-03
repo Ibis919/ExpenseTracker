@@ -110,7 +110,7 @@ fun CsvImportDialog(vm: AppViewModel, uri: Uri, onDismiss: () -> Unit) {
                     Text("清空后导入")
                 }
                 Text(
-                    "清空后导入：删除现有全部记录，再导入 CSV（换机迁移用）。",
+                    "清空后导入：替换全部流水。CSV 不含余额、预算和规则，换机请用完整备份。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -222,11 +222,13 @@ fun SettingsScreen(
     onOpenRecurring: () -> Unit = onDone,
     onOpenCategories: () -> Unit = onDone
 ) {
-    var text by remember { mutableStateOf(centsToInput(vm.budgetCents.value)) }
+    val budget by vm.budgetCents.collectAsState()
+    var text by remember(budget) { mutableStateOf(centsToInput(budget)) }
     val cents = parseAmountToCents(text)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val lastBackup by vm.lastBackup.collectAsState()
+    val backupError by vm.backupError.collectAsState()
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     var showImportSource by remember { mutableStateOf(false) }
     var showExportSource by remember { mutableStateOf(false) }
@@ -386,6 +388,9 @@ fun SettingsScreen(
                     )
                 }
             }
+            backupError?.let { Text("自动备份失败：$it", style = MaterialTheme.typography.bodySmall) }
+            Spacer(Modifier.height(12.dp))
+            BackupSection(vm)
             Spacer(Modifier.height(12.dp))
             OutlinedButton(
                 onClick = { showExportSource = true },

@@ -1,5 +1,5 @@
 {
-  "version": "0.10.1",
-  "notes": "修正微信/支付宝选中框显示在未选中项的问题；选择按钮增加勾选和高对比边框，超预算记录增加文字标记，优化统计分类配色。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.10.1/apk/latest.apk"
+  "version": "0.11.0",
+  "notes": "清晰账本与色弱友好设计；保存成功返回并定位流水，修正整月统计比较；完整备份恢复、周期/模板绑定账户、组合筛选；新增收入、转账及关联退款，按发生月份计算净支出；修复移动周期流水日期或 CSV 覆盖导入后重复记账。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.0/apk/latest.apk"
 }

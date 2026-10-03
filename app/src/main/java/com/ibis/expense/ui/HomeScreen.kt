@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 
 package com.ibis.expense.ui
 
@@ -15,9 +15,13 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,8 +34,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -56,6 +60,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -68,10 +73,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import com.ibis.expense.data.TransactionType
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -85,6 +98,7 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 @Composable
 fun HomeScreen(
@@ -95,16 +109,41 @@ fun HomeScreen(
     val state = vm.homeState.collectAsState().value
     val search = vm.searchState.collectAsState().value
     val query = vm.searchQuery.collectAsState().value
+    val filter by vm.recordFilter.collectAsState()
+    var showFilters by remember { mutableStateOf(false) }
     val accountBalances by vm.accountBalances.collectAsState()
     val categories by vm.categoriesState.collectAsState()
     val emoji = remember(categories) { categories.associate { it.name to it.emoji } }
     var openRowId by remember { mutableStateOf<Long?>(null) }
     var editingAccount by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val savedRecordId by vm.savedRecordId.collectAsState()
+    var highlightedRecordId by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(savedRecordId, state) {
+        val id = savedRecordId ?: return@LaunchedEffect
+        val current = state ?: return@LaunchedEffect
+        var index = 2
+        var target: Int? = null
+        for (day in current.days) {
+            index++
+            for (record in day.records) {
+                if (record.id == id) target = index
+                index++
+            }
+        }
+        target?.let {
+            listState.scrollToItem(it)
+            highlightedRecordId = id
+            delay(2_000)
+            highlightedRecordId = null
+            vm.acknowledgeSavedRecord()
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("记账") },
+                title = { Text("账本") },
                 actions = {
                     IconButton(onClick = onSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "设置")
@@ -115,6 +154,12 @@ fun HomeScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             SearchField(value = query, onValueChange = vm::setSearchQuery)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { showFilters = true }) { Text(if (filter.isActive) "✓ 筛选已应用" else "筛选") }
+                if (query.isNotBlank() || filter.isActive) {
+                    TextButton(onClick = vm::clearSearchAndFilters) { Text("清空全部条件") }
+                }
+            }
             val s = search
             if (s != null) {
                 SearchResults(
@@ -132,16 +177,26 @@ fun HomeScreen(
                 LazyColumn(
                     Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 16.dp)
+                        .padding(horizontal = 16.dp),
+                    state = listState
                 ) {
                     item(key = "balance") { BalanceCard(state, onPrev = vm::previousMonth, onNext = vm::nextMonth) }
                     item(key = "accounts") {
-                        Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
-                            AccountCard(PaymentMethod.WECHAT, accountBalances[PaymentMethod.WECHAT],
-                                Modifier.weight(1f)) { editingAccount = PaymentMethod.WECHAT }
-                            Spacer(Modifier.width(8.dp))
-                            AccountCard(PaymentMethod.ALIPAY, accountBalances[PaymentMethod.ALIPAY],
-                                Modifier.weight(1f)) { editingAccount = PaymentMethod.ALIPAY }
+                        Column(Modifier.fillMaxWidth().padding(top = 16.dp)) {
+                            Text("当前账户余额 · 点按校准", style = MaterialTheme.typography.titleSmall)
+                            Spacer(Modifier.height(8.dp))
+                            BoxWithConstraints {
+                                if (LocalDensity.current.fontScale >= 1.3f || maxWidth < 320.dp) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        AccountCard(PaymentMethod.WECHAT, accountBalances[PaymentMethod.WECHAT], Modifier.fillMaxWidth()) { editingAccount = PaymentMethod.WECHAT }
+                                        AccountCard(PaymentMethod.ALIPAY, accountBalances[PaymentMethod.ALIPAY], Modifier.fillMaxWidth()) { editingAccount = PaymentMethod.ALIPAY }
+                                    }
+                                } else Row {
+                                    AccountCard(PaymentMethod.WECHAT, accountBalances[PaymentMethod.WECHAT], Modifier.weight(1f)) { editingAccount = PaymentMethod.WECHAT }
+                                    Spacer(Modifier.width(8.dp))
+                                    AccountCard(PaymentMethod.ALIPAY, accountBalances[PaymentMethod.ALIPAY], Modifier.weight(1f)) { editingAccount = PaymentMethod.ALIPAY }
+                                }
+                            }
                         }
                     }
                     if (state.days.isEmpty()) {
@@ -161,7 +216,7 @@ fun HomeScreen(
                                 Text(
                                     "点下方「记一笔」开始",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -170,10 +225,15 @@ fun HomeScreen(
                         item(key = "day-${day.date}") {
                             DayHeader(day, Modifier.animateItem())
                         }
-                        items(day.records, key = { it.id }) { record ->
-                            Box(Modifier.padding(bottom = 4.dp).animateItem()) {
+                        itemsIndexed(day.records, key = { _, record -> record.id }) { position, record ->
+                            val shape = ledgerRowShape(position, day.records.size)
+                            Box(Modifier.animateItem().then(
+                                if (highlightedRecordId == record.id) Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(16.dp))
+                                else Modifier
+                            )) {
                                 SwipeRecordRow(
                                     record = record,
+                                    shape = shape,
                                     emoji = emoji,
                                     isOpen = openRowId == record.id,
                                     onOpenChange = { open ->
@@ -198,12 +258,16 @@ fun HomeScreen(
         }
     }
 
+    if (showFilters) RecordFilterDialog(filter, onApply = { vm.setRecordFilter(it); showFilters = false }, onDismiss = { showFilters = false })
+
     editingAccount?.let { method ->
         val current = accountBalances[method]
         var input by remember(method) { mutableStateOf(current?.takeIf { it >= 0 }?.let(::centsToInput) ?: "") }
+        var savingBalance by remember(method) { mutableStateOf(false) }
+        var balanceError by remember(method) { mutableStateOf<String?>(null) }
         val cents = parseAmountToCents(input, allowZero = true)
         AlertDialog(
-            onDismissRequest = { editingAccount = null },
+            onDismissRequest = { if (!savingBalance) editingAccount = null },
             title = { Text("设置${method}余额") },
             text = {
                 Column {
@@ -215,20 +279,28 @@ fun HomeScreen(
                         label = { Text("当前余额（元）") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         isError = input.isNotEmpty() && cents == null,
+                        enabled = !savingBalance,
                         singleLine = true
                     )
+                    balanceError?.let { Text("保存失败：$it") }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
+                    savingBalance = true
+                    balanceError = null
                     scope.launch {
-                        vm.setAccountBalance(method, cents!!)
-                        editingAccount = null
+                        try {
+                            vm.setAccountBalance(method, cents!!)
+                            editingAccount = null
+                        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (e: Exception) { balanceError = e.message ?: "请重试" }
+                        finally { savingBalance = false }
                     }
-                }, enabled = cents != null) { Text("保存") }
+                }, enabled = cents != null && !savingBalance) { Text(if (savingBalance) "保存中…" else "保存") }
             },
             dismissButton = {
-                TextButton(onClick = { editingAccount = null }) { Text("取消") }
+                TextButton(onClick = { editingAccount = null }, enabled = !savingBalance) { Text("取消") }
             }
         )
     }
@@ -236,7 +308,8 @@ fun HomeScreen(
 
 @Composable
 private fun AccountCard(method: String, cents: Long?, modifier: Modifier, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = modifier) {
+    Card(onClick = onClick, modifier = modifier, shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 PaymentIcon(method)
@@ -246,7 +319,7 @@ private fun AccountCard(method: String, cents: Long?, modifier: Modifier, onClic
             Spacer(Modifier.height(8.dp))
             Text(
                 cents?.let { (if (it < 0) "-¥" else "¥") + formatAmount(abs(it)) } ?: "点击设置",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace, fontFeatureSettings = "tnum"),
                 fontWeight = FontWeight.SemiBold
             )
         }
@@ -296,8 +369,8 @@ private fun SearchResults(
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         item(key = "search-summary") {
             Text(
-                text = "找到 ${state.count} 条 · 合计 ¥${formatAmount(state.totalCents)}" +
-                    if (state.excludedTotalCents > 0) " + 代付 ¥${formatAmount(state.excludedTotalCents)}" else "",
+                text = "找到 ${state.count} 条 · 净支出 ¥${formatAmount(state.totalCents)}" +
+                    if (state.excludedTotalCents != 0L) " · 代付 ¥${formatAmount(state.excludedTotalCents)}" else "",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 8.dp)
@@ -320,7 +393,7 @@ private fun SearchResults(
                     Text(
                         "试试换个关键词，或清空搜索",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -329,10 +402,11 @@ private fun SearchResults(
             item(key = "s-day-${day.date}") {
                 DayHeader(day, Modifier.animateItem(), showYear = true)
             }
-            items(day.records, key = { "s-${it.id}" }) { record ->
-                Box(Modifier.padding(bottom = 4.dp).animateItem()) {
+            itemsIndexed(day.records, key = { _, record -> "s-${record.id}" }) { position, record ->
+                Box(Modifier.animateItem()) {
                     SwipeRecordRow(
                         record = record,
+                        shape = ledgerRowShape(position, day.records.size),
                         emoji = emoji,
                         isOpen = openRowId == record.id,
                         onOpenChange = { open -> onOpenChange(if (open) record.id else null) },
@@ -368,7 +442,7 @@ private fun BalanceCard(state: HomeState, onPrev: () -> Unit, onNext: () -> Unit
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                         contentDescription = "上个月",
-                        tint = onContainer.copy(alpha = 0.7f)
+                        tint = onContainer
                     )
                 }
                 AnimatedContent(
@@ -397,15 +471,15 @@ private fun BalanceCard(state: HomeState, onPrev: () -> Unit, onNext: () -> Unit
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowRight,
                         contentDescription = "下个月",
-                        tint = onContainer.copy(alpha = 0.7f)
+                        tint = onContainer
                     )
                 }
             }
             Column(Modifier.padding(horizontal = 12.dp)) {
                 Text(
-                    text = if (over) "已超支，少花点" else "剩余可用",
+                    text = if (over) "！预算已超出" else "预算剩余",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = onContainer.copy(alpha = 0.75f)
+                    color = onContainer
                 )
                 AnimatedContent(
                     targetState = state.remainingCents,
@@ -437,6 +511,7 @@ private fun BalanceCard(state: HomeState, onPrev: () -> Unit, onNext: () -> Unit
                     Modifier
                         .fillMaxWidth()
                         .height(10.dp)
+                        .semantics { progressBarRangeInfo = ProgressBarRangeInfo(rawFraction.coerceIn(0f, 1f), 0f..1f) }
                         .clip(RoundedCornerShape(5.dp))
                         .background(onContainer.copy(alpha = 0.15f))
                 ) {
@@ -449,19 +524,21 @@ private fun BalanceCard(state: HomeState, onPrev: () -> Unit, onNext: () -> Unit
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth()) {
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        "已花 ¥${formatAmount(state.spentCents)}",
+                        "净支出 ¥${formatAmount(state.spentCents)}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = onContainer.copy(alpha = 0.75f)
+                        color = onContainer
                     )
-                    Spacer(Modifier.weight(1f))
                     Text(
                         "预算 ¥${formatAmount(state.budgetCents)}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = onContainer.copy(alpha = 0.75f)
+                        color = onContainer
                     )
                 }
+                Text(if (over) "！超过 100% 上限" else if (rawFraction >= 0.8f) "接近预算 · 已达 80% 提醒线" else "预算内 · 80% 提醒 / 100% 上限",
+                    style = MaterialTheme.typography.labelMedium, color = onContainer)
                 if (isCurrentMonth) {
                     val today = LocalDate.now()
                     val daysLeft = today.lengthOfMonth() - today.dayOfMonth + 1
@@ -474,7 +551,7 @@ private fun BalanceCard(state: HomeState, onPrev: () -> Unit, onNext: () -> Unit
                             "日均可用 ¥${formatAmount(dailyCents)} · 还剩 $daysLeft 天"
                         },
                         style = MaterialTheme.typography.bodySmall,
-                        color = onContainer.copy(alpha = 0.75f)
+                        color = onContainer
                     )
                 }
             }
@@ -484,11 +561,12 @@ private fun BalanceCard(state: HomeState, onPrev: () -> Unit, onNext: () -> Unit
 
 @Composable
 private fun DayHeader(day: DayGroup, modifier: Modifier = Modifier, showYear: Boolean = false) {
-    Row(
+    FlowRow(
         modifier
             .fillMaxWidth()
             .padding(top = 20.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
             text = day.date.format(
@@ -500,9 +578,9 @@ private fun DayHeader(day: DayGroup, modifier: Modifier = Modifier, showYear: Bo
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold
         )
-        Spacer(Modifier.weight(1f))
         Text(
-            text = "¥${formatAmount(day.dayTotalCents)}",
+            text = "净支出 ¥${formatAmount(day.dayTotalCents)}" +
+                if (day.excludedTotalCents != 0L) " · 代付 ¥${formatAmount(day.excludedTotalCents)}" else "",
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -512,6 +590,7 @@ private fun DayHeader(day: DayGroup, modifier: Modifier = Modifier, showYear: Bo
 @Composable
 private fun SwipeRecordRow(
     record: UiRecord,
+    shape: Shape,
     emoji: Map<String, String>,
     isOpen: Boolean,
     onOpenChange: (Boolean) -> Unit,
@@ -567,8 +646,9 @@ private fun SwipeRecordRow(
             Modifier
                 .offset { IntOffset(offset.value.roundToInt(), 0) }
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clip(shape)
+                .background(MaterialTheme.colorScheme.surface)
+                .semantics { customActions = listOf(CustomAccessibilityAction("删除记录") { onDelete(); true }) }
                 .clickable {
                     if (offset.value < 0f) {
                         onOpenChange(false)
@@ -577,80 +657,43 @@ private fun SwipeRecordRow(
                     }
                 }
         ) {
-            Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Column {
                 RecordRowContent(record, emoji)
+                HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
     }
 }
 
+private fun ledgerRowShape(position: Int, count: Int) = RoundedCornerShape(
+    topStart = if (position == 0) 16.dp else 0.dp, topEnd = if (position == 0) 16.dp else 0.dp,
+    bottomStart = if (position == count - 1) 16.dp else 0.dp, bottomEnd = if (position == count - 1) 16.dp else 0.dp
+)
+
 @Composable
 private fun RecordRowContent(record: UiRecord, emoji: Map<String, String>) {
-    val color = if (record.overBudget) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier
-                .size(38.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surface),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(categoryEmoji(record.category, emoji), fontSize = 18.sp)
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = when (record.type) {
+                    TransactionType.INCOME -> "＋ 收入"
+                    TransactionType.TRANSFER -> "⇄ 转账"
+                    TransactionType.REFUND -> "↩ 退款 · ${record.category}"
+                    else -> "${categoryEmoji(record.category, emoji)} ${record.category}"
+                },
+                style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium
+            )
+            Text(transactionAmountLabel(record.type, record.amountCents),
+                style = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace, fontFeatureSettings = "tnum"),
+                fontWeight = FontWeight.SemiBold, color = colors.onSurface)
         }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = record.category,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                    color = color
-                )
-                if (record.excluded) {
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "代付",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(MaterialTheme.colorScheme.secondaryContainer)
-                            .padding(horizontal = 6.dp, vertical = 1.dp)
-                    )
-                }
-                if (record.overBudget) {
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "超预算",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(MaterialTheme.colorScheme.errorContainer)
-                            .padding(horizontal = 6.dp, vertical = 1.dp)
-                    )
-                }
-            }
-            if (record.note.isNotBlank()) {
-                Text(
-                    text = record.note,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (record.overBudget) color else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (record.paymentMethod.isNotEmpty()) {
-                Text(
-                    text = record.paymentMethod,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        Text(
-            text = "-¥${formatAmount(record.amountCents)}",
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = color
-        )
+        if (record.note.isNotBlank()) Text(record.note, Modifier.padding(top = 4.dp),
+            style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+        val account = if (record.type == TransactionType.TRANSFER) "${record.paymentMethod} → ${record.transferTo}"
+            else record.paymentMethod.ifBlank { "未关联账户" }
+        val meta = listOf(account, if (record.excluded) "代付" else "", if (record.overBudget) "！超预算" else "").filter { it.isNotBlank() }.joinToString(" · ")
+        Text(meta, Modifier.padding(top = 4.dp), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
     }
 }

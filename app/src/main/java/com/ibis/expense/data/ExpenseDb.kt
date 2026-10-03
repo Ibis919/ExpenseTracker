@@ -14,6 +14,9 @@ import androidx.room.Update
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
+import java.time.Instant
+import java.time.YearMonth
+import java.time.ZoneId
 
 @Entity(tableName = "expenses")
 data class ExpenseRecord(
@@ -26,7 +29,10 @@ data class ExpenseRecord(
     val excluded: Boolean = false,
     val deletedAt: Long = 0,
     val recurringId: Long = 0,
-    val paymentMethod: String = ""
+    val paymentMethod: String = "",
+    val type: String = TransactionType.EXPENSE,
+    val transferTo: String = "",
+    val relatedRecordId: Long = 0
 )
 
 @Entity(tableName = "account_balances")
@@ -41,7 +47,9 @@ data class RecurringExpense(
     val amountCents: Long,
     val dayOfMonth: Int,
     val category: String,
-    val note: String
+    val note: String,
+    val paymentMethod: String = "",
+    val lastGeneratedMonth: String = ""
 )
 
 @Entity(tableName = "categories")
@@ -56,7 +64,8 @@ data class RecordTemplate(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val amountCents: Long,
     val category: String,
-    val note: String
+    val note: String,
+    val paymentMethod: String = ""
 )
 
 data class CategoryTotal(
@@ -69,11 +78,14 @@ interface ExpenseDao {
     @Query("SELECT * FROM expenses WHERE epochDay BETWEEN :fromDay AND :toDay AND deletedAt = 0 ORDER BY epochDay DESC, createdAt DESC")
     fun observeRange(fromDay: Long, toDay: Long): Flow<List<ExpenseRecord>>
 
-    @Query("SELECT category, SUM(amountCents) AS totalCents FROM expenses WHERE epochDay BETWEEN :fromDay AND :toDay AND excluded = 0 AND deletedAt = 0 GROUP BY category ORDER BY totalCents DESC")
+    @Query("SELECT category, SUM(CASE WHEN type = 'refund' THEN -amountCents ELSE amountCents END) AS totalCents FROM expenses WHERE epochDay BETWEEN :fromDay AND :toDay AND type IN ('expense', 'refund') AND excluded = 0 AND deletedAt = 0 GROUP BY category ORDER BY totalCents DESC")
     fun observeCategoryTotals(fromDay: Long, toDay: Long): Flow<List<CategoryTotal>>
 
     @Query("SELECT * FROM expenses WHERE deletedAt = 0 ORDER BY epochDay ASC, createdAt ASC")
     suspend fun getAllOnce(): List<ExpenseRecord>
+
+    @Query("SELECT * FROM expenses ORDER BY id ASC")
+    suspend fun getAllStoredOnce(): List<ExpenseRecord>
 
     @Query("SELECT * FROM expenses WHERE deletedAt = 0 ORDER BY epochDay ASC, createdAt ASC")
     fun observeAll(): Flow<List<ExpenseRecord>>
@@ -82,46 +94,58 @@ interface ExpenseDao {
     fun observeTrash(): Flow<List<ExpenseRecord>>
 
     @Insert
-    suspend fun insert(record: ExpenseRecord)
+    suspend fun insert(record: ExpenseRecord): Long
 
     @Insert
-    suspend fun insertAll(records: List<ExpenseRecord>)
+    suspend fun insertAll(records: List<ExpenseRecord>): List<Long>
+
+    @Update
+    suspend fun updateRecordEntity(record: ExpenseRecord): Int
 
     @Query("DELETE FROM expenses")
     suspend fun deleteAll()
 
-    @Query("UPDATE expenses SET amountCents = :amountCents, epochDay = :epochDay, category = :category, note = :note, excluded = :excluded, paymentMethod = :paymentMethod WHERE id = :id AND deletedAt = 0")
-    suspend fun updateDetails(id: Long, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean, paymentMethod: String)
-
     @Query("SELECT * FROM account_balances")
     fun observeAccountBalances(): Flow<List<AccountBalance>>
 
-    @Query("SELECT IFNULL(SUM(amountCents), 0) FROM expenses WHERE paymentMethod = :method AND deletedAt = 0")
-    suspend fun spentFromAccount(method: String): Long
+    @Query("SELECT * FROM account_balances ORDER BY method ASC")
+    suspend fun getAccountBalancesOnce(): List<AccountBalance>
+
+    @Query("DELETE FROM account_balances")
+    suspend fun deleteAllAccountBalances()
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAccountBalance(balance: AccountBalance)
 
-    @Query("DELETE FROM expenses WHERE id = :id")
+    @Query("DELETE FROM expenses WHERE id = :id OR relatedRecordId = :id")
     suspend fun deleteById(id: Long)
 
-    @Query("UPDATE expenses SET deletedAt = :ts WHERE id = :id")
+    @Query("UPDATE expenses SET deletedAt = :ts WHERE (id = :id OR relatedRecordId = :id) AND deletedAt = 0")
     suspend fun softDelete(id: Long, ts: Long)
 
-    @Query("UPDATE expenses SET deletedAt = 0 WHERE id = :id")
-    suspend fun restore(id: Long)
+    @Query("SELECT IFNULL(MAX(deletedAt), 0) FROM expenses")
+    suspend fun latestDeletionTimestamp(): Long
 
-    @Query("DELETE FROM expenses WHERE deletedAt > 0 AND deletedAt < :before")
+    @Query("UPDATE expenses SET deletedAt = 0 WHERE id = :id OR (relatedRecordId = :id AND deletedAt = :deletedAt)")
+    suspend fun restore(id: Long, deletedAt: Long)
+
+    @Query("DELETE FROM expenses WHERE (deletedAt > 0 AND deletedAt < :before) OR relatedRecordId IN (SELECT id FROM expenses WHERE deletedAt > 0 AND deletedAt < :before)")
     suspend fun purgeTrashOlderThan(before: Long)
 
     @Query("SELECT COUNT(*) FROM expenses WHERE recurringId = :recurringId AND epochDay BETWEEN :fromDay AND :toDay")
     suspend fun countRecurringInstance(recurringId: Long, fromDay: Long, toDay: Long): Int
+
+    @Query("SELECT COUNT(*) FROM expenses WHERE recurringId = :recurringId AND createdAt >= :fromMillis AND createdAt < :toMillis")
+    suspend fun countRecurringCreated(recurringId: Long, fromMillis: Long, toMillis: Long): Int
 
     @Query("SELECT * FROM recurring_expenses ORDER BY dayOfMonth ASC")
     fun observeRecurring(): Flow<List<RecurringExpense>>
 
     @Query("SELECT * FROM recurring_expenses ORDER BY dayOfMonth ASC")
     suspend fun getAllRecurringOnce(): List<RecurringExpense>
+
+    @Query("DELETE FROM recurring_expenses")
+    suspend fun deleteAllRecurring()
 
     @Insert
     suspend fun insertRecurring(item: RecurringExpense): Long
@@ -134,6 +158,12 @@ interface ExpenseDao {
 
     @Query("SELECT * FROM categories ORDER BY sortOrder ASC, name ASC")
     fun observeCategories(): Flow<List<Category>>
+
+    @Query("SELECT * FROM categories ORDER BY sortOrder ASC, name ASC")
+    suspend fun getAllCategoriesOnce(): List<Category>
+
+    @Query("DELETE FROM categories")
+    suspend fun deleteAllCategories()
 
     @Query("SELECT COUNT(*) FROM categories")
     suspend fun countAllCategories(): Int
@@ -167,6 +197,9 @@ interface ExpenseDao {
 
     @Query("SELECT * FROM templates")
     suspend fun getAllTemplatesOnce(): List<RecordTemplate>
+
+    @Query("DELETE FROM templates")
+    suspend fun deleteAllTemplates()
 
     @Insert
     suspend fun insertTemplate(template: RecordTemplate)
@@ -241,9 +274,31 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE recurring_expenses ADD COLUMN paymentMethod TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE templates ADD COLUMN paymentMethod TEXT NOT NULL DEFAULT ''")
+    }
+}
+
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE expenses ADD COLUMN type TEXT NOT NULL DEFAULT 'expense'")
+        db.execSQL("ALTER TABLE expenses ADD COLUMN transferTo TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE expenses ADD COLUMN relatedRecordId INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE recurring_expenses ADD COLUMN lastGeneratedMonth TEXT NOT NULL DEFAULT ''")
+        db.query("SELECT recurringId, MAX(createdAt) FROM expenses WHERE recurringId > 0 GROUP BY recurringId").use { cursor ->
+            while (cursor.moveToNext()) {
+                val generatedMonth = YearMonth.from(Instant.ofEpochMilli(cursor.getLong(1)).atZone(ZoneId.systemDefault())).toString()
+                db.execSQL("UPDATE recurring_expenses SET lastGeneratedMonth = ? WHERE id = ?", arrayOf(generatedMonth, cursor.getLong(0)))
+            }
+        }
+    }
+}
+
 @Database(
     entities = [ExpenseRecord::class, RecurringExpense::class, Category::class, RecordTemplate::class, AccountBalance::class],
-    version = 5,
+    version = 7,
     exportSchema = false
 )
 abstract class ExpenseDatabase : RoomDatabase() {
@@ -252,7 +307,7 @@ abstract class ExpenseDatabase : RoomDatabase() {
     companion object {
         fun build(context: Context): ExpenseDatabase =
             Room.databaseBuilder(context, ExpenseDatabase::class.java, "expenses.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         db.execSQL(SEED_CATEGORIES)

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -16,17 +17,20 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -36,6 +40,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ibis.expense.ui.AppViewModel
@@ -96,11 +101,16 @@ private fun RequestNotificationPermission() {
 fun App(vm: AppViewModel = viewModel(), importUri: android.net.Uri? = null) {
     var tab by rememberSaveable { mutableStateOf(2) }
     var overlay by remember { mutableStateOf<Screen?>(null) }
+    var recordSaving by remember { mutableStateOf(false) }
     var pendingImportUri by remember { mutableStateOf(importUri) }
+    BackHandler(enabled = overlay != null && !recordSaving) {
+        overlay = when (overlay) { Screen.Trash, Screen.Recurring, Screen.CategoryManage -> Screen.Settings; else -> null }
+    }
     when (val current = overlay) {
         is Screen.Edit -> EditScreen(
             vm = vm,
             initial = current.record,
+            onBusyChange = { recordSaving = it },
             onDone = { overlay = null }
         )
         Screen.Settings -> SettingsScreen(
@@ -118,21 +128,27 @@ fun App(vm: AppViewModel = viewModel(), importUri: android.net.Uri? = null) {
                 NavigationBar {
                     NavigationBarItem(
                         selected = tab == 0,
+                        enabled = !recordSaving,
                         onClick = { tab = 0 },
-                        icon = { Icon(Icons.Default.List, contentDescription = null) },
-                        label = { Text("明细") }
+                        icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null,
+                            modifier = if (tab == 0) Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(4.dp)) else Modifier) },
+                        label = { Text(if (tab == 0) "✓ 账本" else "账本") }
                     )
                     NavigationBarItem(
                         selected = tab == 1,
+                        enabled = !recordSaving,
                         onClick = { tab = 1 },
-                        icon = { Icon(Icons.Default.PieChart, contentDescription = null) },
-                        label = { Text("统计") }
+                        icon = { Icon(Icons.Default.PieChart, contentDescription = null,
+                            modifier = if (tab == 1) Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(4.dp)) else Modifier) },
+                        label = { Text(if (tab == 1) "✓ 统计" else "统计") }
                     )
                     NavigationBarItem(
                         selected = tab == 2,
+                        enabled = !recordSaving,
                         onClick = { tab = 2 },
-                        icon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                        label = { Text("记一笔") }
+                        icon = { Icon(Icons.Default.Edit, contentDescription = null,
+                            modifier = if (tab == 2) Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(4.dp)) else Modifier) },
+                        label = { Text(if (tab == 2) "✓ 记一笔" else "记一笔") }
                     )
                 }
             }
@@ -162,6 +178,7 @@ fun App(vm: AppViewModel = viewModel(), importUri: android.net.Uri? = null) {
                         else -> EditScreen(
                             vm = vm,
                             initial = null,
+                            onBusyChange = { recordSaving = it },
                             onDone = { tab = 0 }
                         )
                     }

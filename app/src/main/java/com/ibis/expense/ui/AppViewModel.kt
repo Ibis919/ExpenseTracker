@@ -14,11 +14,18 @@ import com.ibis.expense.data.ExpenseDatabase
 import com.ibis.expense.data.ExpenseRecord
 import com.ibis.expense.data.RecordTemplate
 import com.ibis.expense.data.RecurringExpense
+import com.ibis.expense.data.BackupSnapshot
+import com.ibis.expense.data.TransactionType
+import com.ibis.expense.data.accountImpact
+import com.ibis.expense.data.budgetImpact
+import com.ibis.expense.data.expenseImpact
+import com.ibis.expense.data.validateTransactions
 import androidx.room.withTransaction
 import java.io.File
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.YearMonth
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
@@ -44,13 +51,17 @@ data class UiRecord(
     val note: String,
     val overBudget: Boolean,
     val excluded: Boolean,
-    val paymentMethod: String
+    val paymentMethod: String,
+    val type: String = TransactionType.EXPENSE,
+    val transferTo: String = "",
+    val relatedRecordId: Long = 0
 )
 
 data class DayGroup(
     val date: LocalDate,
     val dayTotalCents: Long,
-    val records: List<UiRecord>
+    val records: List<UiRecord>,
+    val excludedTotalCents: Long = 0
 )
 
 data class HomeState(
@@ -99,16 +110,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _lastBackup = MutableStateFlow<LocalDate?>(null)
     val lastBackup: StateFlow<LocalDate?> = _lastBackup.asStateFlow()
 
+    private val _backupError = MutableStateFlow<String?>(null)
+    val backupError = _backupError.asStateFlow()
+
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _recordFilter = MutableStateFlow(RecordFilter())
+    val recordFilter = _recordFilter.asStateFlow()
+    fun setRecordFilter(filter: RecordFilter) { _recordFilter.value = filter }
+    fun clearSearchAndFilters() { _searchQuery.value = ""; _recordFilter.value = RecordFilter() }
+
+    private val _savedRecordId = MutableStateFlow<Long?>(null)
+    val savedRecordId: StateFlow<Long?> = _savedRecordId.asStateFlow()
+
+    fun acknowledgeSavedRecord() { _savedRecordId.value = null }
+
+    private fun revealSavedRecord(id: Long, epochDay: Long) {
+        _searchQuery.value = ""
+        _recordFilter.value = RecordFilter()
+        _month.value = YearMonth.from(LocalDate.ofEpochDay(epochDay))
+        _savedRecordId.value = id
+    }
 
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
     }
 
-    val searchState: StateFlow<SearchState?> = combine(_searchQuery, dao.observeAll()) { query, records ->
+    val searchState: StateFlow<SearchState?> = combine(_searchQuery, _recordFilter, dao.observeAll()) { query, filter, records ->
         val q = query.trim()
-        if (q.isEmpty()) null else buildSearchState(q, records)
+        if (q.isEmpty() && !filter.isActive) null else buildSearchState(q, records.filter(filter::matches))
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -132,13 +163,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val byMonth = records.groupBy { YearMonth.from(LocalDate.ofEpochDay(it.epochDay)) }
             val trend = (11L downTo 0L).map { offset ->
                 val ym = month.minusMonths(offset)
-                MonthSpent(ym, byMonth[ym]?.filter { !it.excluded }?.sumOf { it.amountCents } ?: 0L)
+                MonthSpent(ym, byMonth[ym]?.sumOf { it.budgetImpact() } ?: 0L)
             }
             StatsState(
                 month = month,
                 totalCents = catTotals.sumOf { it.totalCents },
                 categoryTotals = catTotals,
-                monthRecords = byMonth[month].orEmpty().filterNot { it.excluded },
+                monthRecords = byMonth[month].orEmpty().filter { !it.excluded && it.type in listOf(TransactionType.EXPENSE, TransactionType.REFUND) },
                 trend = trend,
                 prevMonthTotalCents = prevCatTotals.sumOf { it.totalCents },
                 prevCategoryTotals = prevCatTotals
@@ -162,19 +193,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         dao.observeAccountBalances(), dao.observeAll()
     ) { bases, records ->
         bases.associate { balance ->
-            balance.method to (balance.baseCents - records
-                .filter { it.paymentMethod == balance.method }
-                .sumOf { it.amountCents })
+            balance.method to (balance.baseCents + records.sumOf { it.accountImpact(balance.method) })
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     init {
         viewModelScope.launch {
             homeState.collect { s -> s?.let(::checkBudgetAlert) }
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            BackupManager.backupIfNeeded(app, db)
-            _lastBackup.value = BackupManager.latestBackupDate(app)
         }
         viewModelScope.launch(Dispatchers.IO) {
             if (dao.countAllCategories() == 0) {
@@ -187,17 +212,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             dao.purgeTrashOlderThan(System.currentTimeMillis() - TRASH_RETENTION_MS)
             syncRecurringForCurrentMonth()
+            try {
+                BackupManager.backupIfNeeded(app, db)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _backupError.value = e.message ?: "自动备份失败"
+            }
+            _lastBackup.value = BackupManager.latestBackupDate(app)
         }
     }
 
-    private suspend fun syncRecurringForCurrentMonth() {
+    internal suspend fun syncRecurringForCurrentMonth() = db.withTransaction {
         val today = LocalDate.now()
         val month = YearMonth.from(today)
-        val monthStart = month.atDay(1).toEpochDay()
-        val monthEnd = month.atEndOfMonth().toEpochDay()
         for (r in dao.getAllRecurringOnce()) {
             if (r.dayOfMonth > today.dayOfMonth) continue
-            if (dao.countRecurringInstance(r.id, monthStart, monthEnd) > 0) continue
+            if (r.lastGeneratedMonth == month.toString()) continue
+            if (recurringGeneratedInMonth(r.id, month)) {
+                dao.updateRecurring(r.copy(lastGeneratedMonth = month.toString()))
+                continue
+            }
             val day = r.dayOfMonth.coerceIn(1, month.lengthOfMonth())
             dao.insert(
                 ExpenseRecord(
@@ -206,39 +241,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     createdAt = System.currentTimeMillis(),
                     category = r.category,
                     note = "🔁 ${r.note}".trim(),
-                    recurringId = r.id
+                    recurringId = r.id,
+                    paymentMethod = r.paymentMethod
                 )
             )
+            dao.updateRecurring(r.copy(lastGeneratedMonth = month.toString()))
         }
     }
 
-    fun addRecurring(amountCents: Long, dayOfMonth: Int, category: String, note: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val id = dao.insertRecurring(
-                RecurringExpense(
-                    amountCents = amountCents,
-                    dayOfMonth = dayOfMonth.coerceIn(1, 28),
-                    category = category,
-                    note = note.trim()
-                )
-            )
-            val today = LocalDate.now()
-            val month = YearMonth.from(today)
-            if (dayOfMonth <= today.dayOfMonth &&
-                dao.countRecurringInstance(id, month.atDay(1).toEpochDay(), month.atEndOfMonth().toEpochDay()) == 0
-            ) {
-                dao.insert(
-                    ExpenseRecord(
-                        amountCents = amountCents,
-                        epochDay = LocalDate.of(today.year, today.monthValue, dayOfMonth.coerceIn(1, month.lengthOfMonth())).toEpochDay(),
-                        createdAt = System.currentTimeMillis(),
-                        category = category,
-                        note = "🔁 ${note.trim()}".trim(),
-                        recurringId = id
-                    )
-                )
+    private suspend fun recurringGeneratedInMonth(id: Long, month: YearMonth): Boolean {
+        val zone = ZoneId.systemDefault()
+        return dao.countRecurringInstance(id, month.atDay(1).toEpochDay(), month.atEndOfMonth().toEpochDay()) > 0 ||
+            dao.countRecurringCreated(id, month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli(),
+                month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()) > 0
+    }
+
+    suspend fun saveRecurring(initial: RecurringExpense?, amountCents: Long, dayOfMonth: Int, category: String, note: String, paymentMethod: String): Result<Long> = withContext(Dispatchers.IO) {
+        try {
+            require(amountCents > 0 && dayOfMonth in 1..28 && paymentMethod in PaymentMethod.ALL_WITH_LEGACY) { "请检查金额、日期和支付方式" }
+            val id = db.withTransaction {
+                val current = initial?.let { item -> dao.getAllRecurringOnce().singleOrNull { it.id == item.id } ?: error("周期规则已删除") }
+                val item = RecurringExpense(current?.id ?: 0, amountCents, dayOfMonth, category, note.trim(), paymentMethod, current?.lastGeneratedMonth ?: "")
+                val savedId = if (initial == null) dao.insertRecurring(item) else {
+                    dao.updateRecurring(item)
+                    item.id
+                }
+                if (initial == null) syncRecurringForCurrentMonth()
+                savedId
             }
-        }
+            Result.success(id)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
     }
 
     fun deleteRecurring(id: Long) {
@@ -283,13 +316,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun saveTemplate(amountCents: Long, category: String, note: String) {
+    fun saveTemplate(amountCents: Long, category: String, note: String, paymentMethod: String = PaymentMethod.WECHAT) {
         viewModelScope.launch(Dispatchers.IO) {
             val exists = dao.getAllTemplatesOnce().any {
-                it.amountCents == amountCents && it.category == category && it.note == note
+                it.amountCents == amountCents && it.category == category && it.note == note && it.paymentMethod == paymentMethod
             }
             if (!exists) {
-                dao.insertTemplate(RecordTemplate(amountCents = amountCents, category = category, note = note))
+                dao.insertTemplate(RecordTemplate(amountCents = amountCents, category = category, note = note, paymentMethod = paymentMethod))
             }
         }
     }
@@ -298,47 +331,95 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { dao.deleteTemplateById(id) }
     }
 
-    fun addRecord(amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = false, paymentMethod: String = PaymentMethod.WECHAT) {
-        viewModelScope.launch {
-            dao.insert(
-                ExpenseRecord(
-                    amountCents = amountCents,
-                    epochDay = epochDay,
-                    createdAt = System.currentTimeMillis(),
-                    category = category,
-                    note = note.trim(),
-                    excluded = excluded,
-                    paymentMethod = paymentMethod
-                )
-            )
+    suspend fun addRecord(amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = false, paymentMethod: String = PaymentMethod.WECHAT,
+        type: String = TransactionType.EXPENSE, transferTo: String = "", relatedRecordId: Long = 0): Result<Long> {
+        val result = withContext(Dispatchers.IO) {
+            try {
+                Result.success(db.withTransaction {
+                    val records = dao.getAllStoredOnce()
+                    val candidate = normalizeRefund(ExpenseRecord(amountCents = amountCents, epochDay = epochDay,
+                        createdAt = System.currentTimeMillis(), category = category, note = note.trim(),
+                        excluded = excluded, paymentMethod = paymentMethod, type = type,
+                        transferTo = transferTo, relatedRecordId = relatedRecordId), records)
+                    validateTransactions(records + candidate)
+                    dao.insert(candidate)
+                })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
+        result.onSuccess { revealSavedRecord(it, epochDay) }
+        return result
     }
 
-    fun updateRecord(record: UiRecord, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = record.excluded, paymentMethod: String = record.paymentMethod) {
-        viewModelScope.launch {
-            dao.updateDetails(record.id, amountCents, epochDay, category, note.trim(), excluded, paymentMethod)
+    suspend fun updateRecord(record: UiRecord, amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = record.excluded, paymentMethod: String = record.paymentMethod,
+        transferTo: String = record.transferTo): Result<Unit> {
+        val result = withContext(Dispatchers.IO) {
+            try {
+                val updated = db.withTransaction {
+                    val records = dao.getAllStoredOnce()
+                    val original = records.singleOrNull { it.id == record.id && it.deletedAt == 0L } ?: error("记录不存在或已删除")
+                    val candidate = normalizeRefund(original.copy(amountCents = amountCents, epochDay = epochDay,
+                        category = category, note = note.trim(), excluded = excluded, paymentMethod = paymentMethod, transferTo = transferTo), records)
+                    validateTransactions(records.filterNot { it.id == record.id } + candidate)
+                    check(dao.updateRecordEntity(candidate) == 1) { "记录不存在或已删除" }
+                    candidate
+                }
+                Result.success(updated)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
+        result.onSuccess { updated ->
+            val searching = _searchQuery.value.isNotBlank() || _recordFilter.value.isActive
+            val visible = if (searching) _recordFilter.value.matches(updated) && buildSearchState(_searchQuery.value, listOf(updated)).count == 1
+                else _month.value == YearMonth.from(LocalDate.ofEpochDay(epochDay))
+            if (visible) acknowledgeSavedRecord() else revealSavedRecord(record.id, epochDay)
+        }
+        return result.map { Unit }
     }
 
     suspend fun setAccountBalance(method: String, cents: Long) {
         withContext(Dispatchers.IO) {
             db.withTransaction {
-                dao.upsertAccountBalance(AccountBalance(method, cents + dao.spentFromAccount(method)))
+                require(method in listOf(PaymentMethod.WECHAT, PaymentMethod.ALIPAY) && cents >= 0) { "账户或金额无效" }
+                dao.upsertAccountBalance(AccountBalance(method, cents - dao.getAllOnce().sumOf { it.accountImpact(method) }))
             }
         }
     }
 
     fun deleteRecord(id: Long) {
         viewModelScope.launch {
-            dao.softDelete(id, System.currentTimeMillis())
+            db.withTransaction {
+                dao.softDelete(id, maxOf(System.currentTimeMillis(), dao.latestDeletionTimestamp() + 1))
+            }
         }
     }
 
-    fun restoreRecord(id: Long) {
-        viewModelScope.launch {
-            dao.restore(id)
-        }
+    suspend fun restoreRecord(id: Long): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            db.withTransaction {
+                val record = dao.getAllStoredOnce().singleOrNull { it.id == id } ?: error("记录不存在")
+                dao.restore(id, record.deletedAt)
+                validateTransactions(dao.getAllStoredOnce())
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
     }
+
+    private fun normalizeRefund(record: ExpenseRecord, records: List<ExpenseRecord>): ExpenseRecord {
+        if (record.type != TransactionType.REFUND) return record
+        val parent = records.singleOrNull { it.id == record.relatedRecordId && it.deletedAt == 0L && it.type == TransactionType.EXPENSE }
+            ?: error("请选择有效的原支出")
+        return record.copy(category = parent.category, excluded = parent.excluded, paymentMethod = parent.paymentMethod)
+    }
+
+    val allRecords = dao.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun deleteRecordForever(id: Long) {
         viewModelScope.launch {
@@ -359,6 +440,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _month.value = _month.value.plusMonths(1)
     }
 
+    suspend fun exportBackupTo(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val app = getApplication<Application>()
+            val snapshot = BackupManager.capture(app, db)
+            app.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(BackupManager.encode(snapshot).toByteArray(Charsets.UTF_8))
+            } ?: error("无法打开目标文件")
+            Result.success(snapshot.records.size)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
+    }
+
+    suspend fun readBackup(uri: Uri): Result<BackupSnapshot> = withContext(Dispatchers.IO) {
+        try {
+            val text = getApplication<Application>().contentResolver.openInputStream(uri)
+                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: error("无法读取文件")
+            Result.success(BackupManager.decode(text))
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
+    }
+
+    suspend fun localBackupNames(): List<String> = withContext(Dispatchers.IO) {
+        File(getApplication<Application>().filesDir, "backups").listFiles()
+            ?.filter { it.extension == "json" }?.sortedByDescending { it.lastModified() }
+            ?.map { it.name }.orEmpty()
+    }
+
+    suspend fun readLocalBackup(name: String): Result<BackupSnapshot> = withContext(Dispatchers.IO) {
+        try {
+            require(name in localBackupNames()) { "备份文件不存在" }
+            Result.success(BackupManager.decode(File(getApplication<Application>().filesDir, "backups/$name").readText(Charsets.UTF_8)))
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
+    }
+
+    suspend fun restoreBackup(snapshot: BackupSnapshot): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            BackupManager.restore(getApplication(), db, snapshot)
+            _budgetCents.value = snapshot.budgetCents
+            _searchQuery.value = ""
+            _recordFilter.value = RecordFilter()
+            _savedRecordId.value = null
+            _backupError.value = null
+            Result.success(Unit)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
+    }
+
     suspend fun exportCsvForShare(): File? = withContext(Dispatchers.IO) {
         val records = dao.getAllOnce()
         if (records.isEmpty()) return@withContext null
@@ -366,7 +495,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val dir = File(app.cacheDir, "exports").apply { mkdirs() }
         val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
         val file = File(dir, "记账-$stamp.csv")
-        file.writeText(buildCsv(records), Charsets.UTF_8)
+        file.writeText(encodeRecordCsv(records), Charsets.UTF_8)
         file
     }
 
@@ -378,7 +507,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             val app = getApplication<Application>()
             app.contentResolver.openOutputStream(uri)?.use { out ->
-                out.write(buildCsv(records).toByteArray(Charsets.UTF_8))
+                out.write(encodeRecordCsv(records).toByteArray(Charsets.UTF_8))
                 out.flush()
             } ?: return@withContext Result.failure(IllegalStateException("无法打开目标文件"))
             Result.success(records.size)
@@ -393,117 +522,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val app = getApplication<Application>()
             val content = app.contentResolver.openInputStream(uri)
-                ?.bufferedReader(Charsets.UTF_8)
-                ?.use { it.readText() }
-                ?: return@withContext Result.failure(IllegalStateException("无法读取文件"))
-            val dateFormat = DateTimeFormatter.ISO_LOCAL_DATE
-            val records = mutableListOf<ExpenseRecord>()
-            var skipped = 0
-            for (fields in parseCsv(content)) {
-                if (fields.firstOrNull()?.trim() == "日期") continue
-                val date = runCatching { LocalDate.parse(fields.getOrNull(0)?.trim(), dateFormat) }.getOrNull()
-                val cents = fields.getOrNull(1)?.let { parseAmountToCents(it) }
-                val paymentMethod = fields.getOrElse(5) { "" }.trim()
-                if (fields.size !in 3..6 || date == null || cents == null || fields.getOrNull(2).isNullOrBlank() ||
-                    paymentMethod !in PaymentMethod.ALL_WITH_LEGACY) {
-                    skipped++
-                    continue
-                }
-                records += ExpenseRecord(
-                    amountCents = cents,
-                    epochDay = date.toEpochDay(),
-                    createdAt = System.currentTimeMillis(),
-                    category = fields[2].trim(),
-                    note = fields.getOrElse(3) { "" }.trim(),
-                    excluded = fields.getOrElse(4) { "" }.trim() == "是",
-                    paymentMethod = paymentMethod
-                )
-            }
-            if (records.isEmpty()) {
-                return@withContext Result.failure(IllegalStateException("文件中没有有效记录"))
-            }
+                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: error("无法读取文件")
+            val decoded = decodeRecordCsv(content)
+            val records = decoded.records
             db.withTransaction {
-                if (replace) dao.deleteAll()
+                if (replace) {
+                    BackupManager.saveProtection(app, db)
+                    val month = YearMonth.now()
+                    for (rule in dao.getAllRecurringOnce()) {
+                        if (recurringGeneratedInMonth(rule.id, month)) {
+                            dao.updateRecurring(rule.copy(lastGeneratedMonth = month.toString()))
+                        }
+                    }
+                    dao.deleteAll()
+                }
                 val known = HashSet<String>()
-                for (r in records) {
-                    if (!known.add(r.category)) continue
-                    if (dao.countCategory(r.category) == 0) {
-                        dao.insertCategory(Category(r.category, "📦", dao.maxCategorySort() + 1))
+                for (record in records) {
+                    if (record.type !in listOf(TransactionType.EXPENSE, TransactionType.REFUND) || !known.add(record.category)) continue
+                    if (dao.countCategory(record.category) == 0) {
+                        dao.insertCategory(Category(record.category, "📦", dao.maxCategorySort() + 1))
                     }
                 }
-                dao.insertAll(records)
+                val ids = dao.insertAll(records.map { it.copy(id = 0, relatedRecordId = 0) })
+                val idMap = records.mapIndexed { index, record -> record.id to ids[index] }.toMap()
+                records.forEachIndexed { index, record ->
+                    if (record.type == TransactionType.REFUND) {
+                        check(dao.updateRecordEntity(record.copy(id = ids[index], relatedRecordId = idMap.getValue(record.relatedRecordId))) == 1)
+                    }
+                }
+                validateTransactions(dao.getAllStoredOnce())
             }
-            Result.success(ImportOutcome(records.size, skipped))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    private fun parseCsv(content: String): List<List<String>> {
-        val rows = mutableListOf<List<String>>()
-        val fields = mutableListOf<String>()
-        val field = StringBuilder()
-        var inQuotes = false
-        var afterQuotes = false
-
-        fun finishField() {
-            fields.add(field.toString())
-            field.clear()
-            afterQuotes = false
-        }
-
-        fun finishRow() {
-            finishField()
-            if (fields.any { it.isNotBlank() }) rows.add(fields.toList())
-            fields.clear()
-        }
-
-        var i = 0
-        val text = content.removePrefix("\uFEFF")
-        while (i < text.length) {
-            val c = text[i]
-            when {
-                inQuotes && c == '"' && i + 1 < text.length && text[i + 1] == '"' -> {
-                    field.append('"')
-                    i++
-                }
-                inQuotes && c == '"' -> {
-                    inQuotes = false
-                    afterQuotes = true
-                }
-                inQuotes -> field.append(c)
-                c == '"' && field.isEmpty() && !afterQuotes -> inQuotes = true
-                c == '"' -> throw IllegalArgumentException("CSV 引号格式错误")
-                c == ',' -> finishField()
-                c == '\r' || c == '\n' -> {
-                    finishRow()
-                    if (c == '\r' && i + 1 < text.length && text[i + 1] == '\n') i++
-                }
-                afterQuotes && !c.isWhitespace() -> throw IllegalArgumentException("CSV 引号格式错误")
-                !afterQuotes -> field.append(c)
-            }
-            i++
-        }
-        if (inQuotes) throw IllegalArgumentException("CSV 引号未闭合")
-        if (field.isNotEmpty() || fields.isNotEmpty() || afterQuotes) finishRow()
-        return rows
-    }
-
-    private fun buildCsv(records: List<ExpenseRecord>): String = buildString {
-        append('\uFEFF')
-        appendLine("日期,金额,分类,备注,代付,支付方式")
-        val dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd")
-        for (r in records) {
-            append(LocalDate.ofEpochDay(r.epochDay).format(dateFormat)).append(',')
-            append(formatAmount(r.amountCents)).append(',')
-            append('"').append(r.category.replace("\"", "\"\"")).append('"').append(',')
-            append('"').append(r.note.replace("\"", "\"\"")).append('"').append(',')
-            append(if (r.excluded) "是" else "否").append(',')
-            append(r.paymentMethod)
-            appendLine()
-        }
+            Result.success(ImportOutcome(records.size, decoded.skipped))
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
     }
 
     private fun checkBudgetAlert(s: HomeState) {
@@ -533,6 +584,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val termCents = parseAmountToCents(term)
                 r.note.lowercase().contains(tl) ||
                     r.category.lowercase().contains(tl) ||
+                    r.paymentMethod.contains(term) || r.transferTo.contains(term) || TransactionType.label(r.type).contains(term) ||
                     (termCents != null && r.amountCents == termCents) ||
                     dateStrings.any { it.contains(term) }
             }
@@ -540,7 +592,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val days = matched.groupBy { it.epochDay }.map { (day, list) ->
             DayGroup(
                 date = LocalDate.ofEpochDay(day),
-                dayTotalCents = list.sumOf { it.amountCents },
+                dayTotalCents = list.sumOf { it.budgetImpact() },
+                excludedTotalCents = list.filter { it.excluded }.sumOf { it.expenseImpact() },
                 records = list.sortedByDescending { it.createdAt }.map {
                     UiRecord(
                         id = it.id,
@@ -551,7 +604,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         note = it.note,
                         overBudget = false,
                         excluded = it.excluded,
-                        paymentMethod = it.paymentMethod
+                        paymentMethod = it.paymentMethod,
+                        type = it.type,
+                        transferTo = it.transferTo,
+                        relatedRecordId = it.relatedRecordId
                     )
                 }
             )
@@ -559,8 +615,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return SearchState(
             query = query,
             count = matched.size,
-            totalCents = matched.filter { !it.excluded }.sumOf { it.amountCents },
-            excludedTotalCents = matched.filter { it.excluded }.sumOf { it.amountCents },
+            totalCents = matched.sumOf { it.budgetImpact() },
+            excludedTotalCents = matched.filter { it.excluded }.sumOf { it.expenseImpact() },
             days = days
         )
     }
@@ -589,18 +645,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val over = HashMap<Long, Boolean>(records.size)
         var cumulative = 0L
         for (record in ascending) {
-            if (record.excluded) {
+            if (record.excluded || record.type in listOf(TransactionType.INCOME, TransactionType.TRANSFER)) {
                 over[record.id] = false
                 continue
             }
-            cumulative += record.amountCents
-            over[record.id] = cumulative > budget
+            cumulative += record.budgetImpact()
+            over[record.id] = record.type == TransactionType.EXPENSE && cumulative > budget
         }
-        val spent = records.filter { !it.excluded }.sumOf { it.amountCents }
+        val spent = records.sumOf { it.budgetImpact() }
         val days = records.groupBy { it.epochDay }.map { (day, list) ->
             DayGroup(
                 date = LocalDate.ofEpochDay(day),
-                dayTotalCents = list.filter { !it.excluded }.sumOf { it.amountCents },
+                dayTotalCents = list.sumOf { it.budgetImpact() },
+                excludedTotalCents = list.filter { it.excluded }.sumOf { it.expenseImpact() },
                 records = list.map {
                     UiRecord(
                         id = it.id,
@@ -611,7 +668,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         note = it.note,
                         overBudget = over[it.id] == true,
                         excluded = it.excluded,
-                        paymentMethod = it.paymentMethod
+                        paymentMethod = it.paymentMethod,
+                        type = it.type,
+                        transferTo = it.transferTo,
+                        relatedRecordId = it.relatedRecordId
                     )
                 }
             )

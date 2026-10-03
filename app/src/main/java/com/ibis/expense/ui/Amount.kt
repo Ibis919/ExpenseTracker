@@ -1,6 +1,10 @@
 package com.ibis.expense.ui
 
 import java.util.Locale
+import com.ibis.expense.data.TransactionType
+
+fun transactionAmountLabel(type: String, cents: Long): String =
+    (when (type) { TransactionType.EXPENSE -> "−¥"; TransactionType.INCOME, TransactionType.REFUND -> "+¥"; else -> "¥" }) + formatAmount(cents)
 
 fun formatAmount(cents: Long): String =
     String.format(Locale.US, "%.2f", cents / 100.0)
