@@ -20,7 +20,7 @@
 
 - 影响范围：`EditScreen` 金额输入控件及新的计算器弹层/纯运算逻辑；新增金额计算器行为规格。
 - 不涉及数据库、CSV、账户余额逻辑；已取消的照片与便携备份需求不属于本提案；不引入数学库。
-- 本变更已实现并通过本地自动化与SDK 34原生UI验收。正式发布与CDN分发核验尚待完成；真机键盘与TalkBack验收尚未完成。
+- 本变更已实现、通过本地自动化与SDK 34原生UI验收，并完成正式发布与CDN分发核验。真机键盘与TalkBack验收尚未完成。
 
 ## Constraints and Assumptions
 
@@ -31,4 +31,5 @@
 ## Verification
 
 - 本地自动测试58项通过，0 failures、0 errors；SDK 34原生UI通过浅/深色、200%文字与触点位置及计算器保存流程检查。
-- Release构建、签名和APK体积核验已完成；详细证据见 `docs/releases/v0.11.1.md`。正式发布与CDN分发核验尚待完成。
+- Release构建、签名和APK体积核验已完成；详细证据见 `docs/releases/v0.11.1.md`。
+- GitHub Release [v0.11.1](https://github.com/Ibis919/ExpenseTracker/releases/tag/v0.11.1) 已发布并为Latest；提交 `fd1dfce` 已合入并推送 main。GitHub及cdn、fastly、gcore三个版本标签APK均为11,101,370字节，SHA256同为 `508491ae729d5b221c9bea3fc1c3788ac4ad6037965ac8fcc5eb2e225b15f579`；三个main清单均为0.11.1并指向gcore版本标签APK；三条purge均完成，throttled=false且CF/FY=true。
