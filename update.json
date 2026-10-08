@@ -1,5 +1,5 @@
 {
-  "version": "0.11.0",
-  "notes": "清晰账本与色弱友好设计；保存成功返回并定位流水，修正整月统计比较；完整备份恢复、周期/模板绑定账户、组合筛选；新增收入、转账及关联退款，按发生月份计算净支出；修复移动周期流水日期或 CSV 覆盖导入后重复记账。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.0/apk/latest.apk"
+  "version": "0.11.1",
+  "notes": "金额栏新增四则计算器，支持连续运算与结果预览；可将有效金额填入当前表单，填入不会自动保存流水。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.1/apk/latest.apk"
 }

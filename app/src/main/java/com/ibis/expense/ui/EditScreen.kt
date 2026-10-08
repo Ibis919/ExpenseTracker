@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
@@ -53,7 +54,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -85,11 +88,14 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
     var showDatePicker by remember { mutableStateOf(false) }
     var showRefundPicker by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showAmountCalculator by rememberSaveable { mutableStateOf(false) }
     var deleteTemplateTarget by remember { mutableStateOf<RecordTemplate?>(null) }
     var saving by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     BackHandler(enabled = saving) { }
     val amountCents = parseAmountToCents(amount)
     val parent = records.firstOrNull { it.id == relatedId && it.type == TransactionType.EXPENSE }
@@ -160,7 +166,19 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
                 placeholder = { Text("0.00", Modifier.fillMaxWidth(), textAlign = TextAlign.Center, style = MaterialTheme.typography.headlineMedium) },
                 isError = amount.isNotBlank() && amountCents == null,
                 supportingText = { if (amount.isNotBlank() && amountCents == null) Text("请输入正确金额，最多两位小数") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true,
+                trailingIcon = {
+                    IconButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                            showAmountCalculator = true
+                        },
+                        enabled = !saving
+                    ) {
+                        Icon(Icons.Default.Calculate, contentDescription = "打开计算器")
+                    }
+                })
             Spacer(Modifier.height(12.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TransactionType.ALL.forEach { value ->
@@ -250,6 +268,16 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
             }
             Spacer(Modifier.height(16.dp))
         }
+    }
+    if (showAmountCalculator) {
+        AmountCalculatorDialog(
+            initialAmount = amount,
+            onApply = { calculatedAmount ->
+                amount = calculatedAmount
+                showAmountCalculator = false
+            },
+            onDismiss = { showAmountCalculator = false }
+        )
     }
     if (showDatePicker) {
         val picker = rememberDatePickerState(initialSelectedDateMillis = epochDay * MILLIS_PER_DAY)
