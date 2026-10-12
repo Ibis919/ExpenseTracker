@@ -61,7 +61,8 @@ data class DayGroup(
     val date: LocalDate,
     val dayTotalCents: Long,
     val records: List<UiRecord>,
-    val excludedTotalCents: Long = 0
+    val excludedTotalCents: Long = 0,
+    val paymentSpentCents: Map<String, Long> = emptyMap()
 )
 
 data class HomeState(
@@ -70,7 +71,8 @@ data class HomeState(
     val spentCents: Long,
     val remainingCents: Long,
     val isOverBudget: Boolean,
-    val days: List<DayGroup>
+    val days: List<DayGroup>,
+    val paymentSpentCents: Map<String, Long> = emptyMap()
 )
 
 data class MonthSpent(
@@ -93,7 +95,8 @@ data class SearchState(
     val count: Int,
     val totalCents: Long,
     val excludedTotalCents: Long,
-    val days: List<DayGroup>
+    val days: List<DayGroup>,
+    val paymentSpentCents: Map<String, Long> = emptyMap()
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -594,6 +597,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 date = LocalDate.ofEpochDay(day),
                 dayTotalCents = list.sumOf { it.budgetImpact() },
                 excludedTotalCents = list.filter { it.excluded }.sumOf { it.expenseImpact() },
+                paymentSpentCents = paymentSpentCents(list),
                 records = list.sortedByDescending { it.createdAt }.map {
                     UiRecord(
                         id = it.id,
@@ -617,7 +621,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             count = matched.size,
             totalCents = matched.sumOf { it.budgetImpact() },
             excludedTotalCents = matched.filter { it.excluded }.sumOf { it.expenseImpact() },
-            days = days
+            days = days,
+            paymentSpentCents = paymentSpentCents(matched)
         )
     }
 
@@ -658,6 +663,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 date = LocalDate.ofEpochDay(day),
                 dayTotalCents = list.sumOf { it.budgetImpact() },
                 excludedTotalCents = list.filter { it.excluded }.sumOf { it.expenseImpact() },
+                paymentSpentCents = paymentSpentCents(list),
                 records = list.map {
                     UiRecord(
                         id = it.id,
@@ -682,9 +688,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             spentCents = spent,
             remainingCents = budget - spent,
             isOverBudget = spent > budget,
-            days = days
+            days = days,
+            paymentSpentCents = paymentSpentCents(records)
         )
     }
+
+    private fun paymentSpentCents(records: List<ExpenseRecord>): Map<String, Long> =
+        records.groupBy { it.paymentMethod }.mapValues { (_, payments) -> payments.sumOf { it.budgetImpact() } }
 
     companion object {
         private const val KEY_BUDGET_CENTS = "budget_cents"

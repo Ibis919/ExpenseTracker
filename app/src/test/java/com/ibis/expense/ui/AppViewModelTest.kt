@@ -464,6 +464,94 @@ class AppViewModelTest {
     }
 
     @Test
+    fun paymentSpendingGroupsNetImpactByAccountAcrossMonthsAndSearchFilters() = runBlocking {
+        val previousDay = YearMonth.now().minusMonths(1).atEndOfMonth().toEpochDay()
+        val secondDay = YearMonth.now().atDay(if (LocalDate.now().dayOfMonth == 1) 2 else 1).toEpochDay()
+        vm.addRecord(1_000, previousDay, "餐饮", "旧微信支出", paymentMethod = PaymentMethod.WECHAT).getOrThrow()
+        val oldAlipayId = vm.addRecord(2_000, previousDay, "交通", "上月支付宝支出", paymentMethod = PaymentMethod.ALIPAY).getOrThrow()
+        vm.addRecord(1_500, day, "餐饮", "微信本月支出", paymentMethod = PaymentMethod.WECHAT).getOrThrow()
+        vm.addRecord(2_000, day, "交通", "支付宝退款", paymentMethod = PaymentMethod.ALIPAY,
+            type = TransactionType.REFUND, relatedRecordId = oldAlipayId).getOrThrow()
+        vm.addRecord(900, day, "其他", "未关联旧账", paymentMethod = "").getOrThrow()
+        vm.addRecord(2_500, secondDay, "餐饮", "次日微信", paymentMethod = PaymentMethod.WECHAT).getOrThrow()
+        val secondDayAlipayId = vm.addRecord(3_300, secondDay, "交通", "次日支付宝", paymentMethod = PaymentMethod.ALIPAY).getOrThrow()
+        vm.addRecord(500, secondDay, "交通", "次日支付宝退款", paymentMethod = PaymentMethod.ALIPAY,
+            type = TransactionType.REFUND, relatedRecordId = secondDayAlipayId).getOrThrow()
+        vm.addRecord(8_000, day, "餐饮", "代付", excluded = true, paymentMethod = PaymentMethod.WECHAT).getOrThrow()
+        vm.addRecord(7_000, day, "收入", "收入", paymentMethod = PaymentMethod.ALIPAY,
+            type = TransactionType.INCOME).getOrThrow()
+        vm.addRecord(6_000, day, "转账", "转账", paymentMethod = PaymentMethod.WECHAT,
+            type = TransactionType.TRANSFER, transferTo = PaymentMethod.ALIPAY).getOrThrow()
+
+        val current = withTimeout(5_000) {
+            vm.homeState.first {
+                it?.month == YearMonth.now() && it.days.sumOf { group -> group.records.size } == 9 &&
+                    it.paymentSpentCents[PaymentMethod.WECHAT] == 4_000L
+            }!!
+        }
+        assertEquals(YearMonth.now(), current.month)
+        assertEquals(4_000L, current.paymentSpentCents[PaymentMethod.WECHAT])
+        assertEquals(800L, current.paymentSpentCents[PaymentMethod.ALIPAY])
+        assertEquals(900L, current.paymentSpentCents[""])
+        assertEquals(0L, current.paymentSpentCents["缺失渠道"] ?: 0L)
+        assertEquals(current.spentCents, current.paymentSpentCents.values.sum())
+        assertEquals(5_700L, current.spentCents)
+
+        val today = current.days.single { it.date.toEpochDay() == day }
+        assertEquals(1_500L, today.paymentSpentCents[PaymentMethod.WECHAT])
+        assertEquals(-2_000L, today.paymentSpentCents[PaymentMethod.ALIPAY])
+        assertEquals(900L, today.paymentSpentCents[""])
+        assertEquals(400L, today.dayTotalCents)
+        assertEquals(today.dayTotalCents, today.paymentSpentCents.values.sum())
+        val otherDay = current.days.single { it.date.toEpochDay() == secondDay }
+        assertEquals(2_500L, otherDay.paymentSpentCents[PaymentMethod.WECHAT])
+        assertEquals(2_800L, otherDay.paymentSpentCents[PaymentMethod.ALIPAY])
+        assertEquals(5_300L, otherDay.dayTotalCents)
+        assertEquals(otherDay.dayTotalCents, otherDay.paymentSpentCents.values.sum())
+        assertEquals(current.spentCents, current.days.sumOf { it.dayTotalCents })
+        assertEquals(current.paymentSpentCents[PaymentMethod.WECHAT], current.days.sumOf { it.paymentSpentCents[PaymentMethod.WECHAT] ?: 0L })
+        assertEquals(current.paymentSpentCents[PaymentMethod.ALIPAY], current.days.sumOf { it.paymentSpentCents[PaymentMethod.ALIPAY] ?: 0L })
+        assertEquals(current.paymentSpentCents[""], current.days.sumOf { it.paymentSpentCents[""] ?: 0L })
+
+        vm.previousMonth()
+        val previous = withTimeout(5_000) {
+            vm.homeState.first { it?.month == YearMonth.now().minusMonths(1) }!!
+        }
+        assertEquals(1_000L, previous.paymentSpentCents[PaymentMethod.WECHAT])
+        assertEquals(2_000L, previous.paymentSpentCents[PaymentMethod.ALIPAY])
+        assertEquals(previous.spentCents, previous.paymentSpentCents.values.sum())
+
+        vm.setSearchQuery("本月")
+        vm.setRecordFilter(RecordFilter(PaymentMethod.WECHAT, fromDay = day, toDay = day))
+        val filtered = withTimeout(5_000) {
+            vm.searchState.first { it?.count == 1 && it.paymentSpentCents[PaymentMethod.WECHAT] == 1_500L }!!
+        }
+        assertEquals(1_500L, filtered.totalCents)
+        assertEquals(1_500L, filtered.paymentSpentCents[PaymentMethod.WECHAT])
+        assertEquals(0L, filtered.paymentSpentCents[PaymentMethod.ALIPAY] ?: 0L)
+        assertEquals(1_500L, filtered.days.single().paymentSpentCents[PaymentMethod.WECHAT])
+        assertEquals(filtered.days.single().dayTotalCents, filtered.days.single().paymentSpentCents.values.sum())
+
+        vm.setSearchQuery("次日")
+        vm.setRecordFilter(RecordFilter(PaymentMethod.ALIPAY, fromDay = secondDay, toDay = secondDay))
+        val filteredOtherDay = withTimeout(5_000) {
+            vm.searchState.first { it?.count == 2 && it.paymentSpentCents[PaymentMethod.ALIPAY] == 2_800L }!!
+        }
+        assertEquals(2_800L, filteredOtherDay.totalCents)
+        assertEquals(2_800L, filteredOtherDay.days.single().paymentSpentCents[PaymentMethod.ALIPAY])
+        assertEquals(0L, filteredOtherDay.days.single().paymentSpentCents[PaymentMethod.WECHAT] ?: 0L)
+
+        vm.nextMonth()
+        vm.nextMonth()
+        val emptyMonth = withTimeout(5_000) {
+            vm.homeState.first { it?.month == YearMonth.now().plusMonths(1) }!!
+        }
+        assertEquals(0L, emptyMonth.paymentSpentCents[PaymentMethod.WECHAT] ?: 0L)
+        assertEquals(0L, emptyMonth.paymentSpentCents[PaymentMethod.ALIPAY] ?: 0L)
+        Unit
+    }
+
+    @Test
     fun deletingOriginalExpenseRestoresOnlyItsAssociatedActiveRefunds() = runBlocking {
         vm.setAccountBalance(PaymentMethod.WECHAT, 100000)
         val expense = vm.addRecord(10000, day, "购物", "原支出").getOrThrow()

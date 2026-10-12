@@ -25,8 +25,10 @@ import com.ibis.expense.ui.theme.ExpenseTheme
 import java.io.File
 import java.time.Duration
 import java.time.LocalDate
+import java.time.YearMonth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -90,6 +92,12 @@ class UiLayoutTest {
         doubleFontScaleKeepsPrimaryControlsInsideTheViewportAndTheirTextUncut()
         closeActivity()
         calculatorFitsAndRemainsOperableAtDoubleFontScale()
+        closeActivity()
+        paymentSpendingBreakdownMatchesVisibleLedgerSearchAndAccountFilter()
+        closeActivity()
+        paymentSpendingBreakdownFitsInDarkTheme()
+        closeActivity()
+        paymentSpendingBreakdownFitsAtDoubleFontScale()
     }
 
     private fun lightDefaultSelectionAndSuccessfulSaveReturnToTheVisibleLedger() {
@@ -314,6 +322,221 @@ class UiLayoutTest {
         assertEquals("大字号下操作不能保存流水", recordsBefore, vm.allRecords.value.toList())
     }
 
+    private fun paymentSpendingBreakdownMatchesVisibleLedgerSearchAndAccountFilter() {
+        openApp()
+        seedPaymentSpendingRecords()
+        showPaymentSpendingLedger()
+        await("真实账本应显示微信和支付宝净支出") {
+            nodes().any { "微信 ¥" in it.text() } && nodes().any { "支付宝 ¥" in it.text() }
+        }
+        assertTrue(nodes().any { "微信 ¥46.90" in it.text() })
+        assertTrue(nodes().any { "支付宝 ¥69.12" in it.text() })
+        screenshot("payment-spending-light")
+        assertPaymentRowLayout("微信 ¥46.90", "支付宝 ¥69.12")
+        assertPaymentTextLayout("微信 ¥46.90")
+        assertPaymentTextLayout("支付宝 ¥69.12")
+
+        val (firstDay, secondDay) = paymentSpendingEpochDays()
+        assertDayPaymentSummary(firstDay, "微信 ¥12.34", "支付宝 ¥23.45")
+        screenshot("daily-payment-spending-light")
+
+        val searchField = nodes().first { it.config.getOrNull(SemanticsActions.SetText)?.action != null }
+        assertTrue(searchField.config[SemanticsActions.SetText].action!!.invoke(AnnotatedString("午饭")))
+        await("关键词搜索应只汇总微信午饭记录") {
+            nodes().any { "微信 ¥12.34" in it.text() } &&
+                nodes().any { "支付宝 ¥0.00" in it.text() }
+        }
+        assertDayPaymentSummary(firstDay, "微信 ¥12.34", "支付宝 ¥0.00")
+        val activeSearchField = nodes().first { it.config.getOrNull(SemanticsActions.SetText)?.action != null }
+        assertTrue(activeSearchField.config[SemanticsActions.SetText].action!!.invoke(AnnotatedString("晚饭")))
+        vm.setRecordFilter(RecordFilter(PaymentMethod.ALIPAY,
+            fromDay = secondDay, toDay = secondDay))
+        await("支付宝账户和日期筛选应仅显示支付宝净支出") {
+            nodes().any { "支付宝 ¥45.67" in it.text() } &&
+                nodes().any { "微信 ¥0.00" in it.text() }
+        }
+        assertDayPaymentSummary(secondDay, "微信 ¥0.00", "支付宝 ¥45.67")
+    }
+
+    private fun paymentSpendingBreakdownFitsInDarkTheme() {
+        openApp(darkTheme = true)
+        seedPaymentSpendingRecords()
+        showPaymentSpendingLedger()
+        await("深色主题应显示两种支付渠道净支出") {
+            nodes().any { "微信 ¥" in it.text() } && nodes().any { "支付宝 ¥" in it.text() }
+        }
+        screenshot("payment-spending-dark")
+        assertPaymentRowLayout("微信 ¥46.90", "支付宝 ¥69.12")
+        assertPaymentTextLayout("微信 ¥46.90")
+        assertPaymentTextLayout("支付宝 ¥69.12")
+        val (firstDay, _) = paymentSpendingEpochDays()
+        assertDayPaymentSummary(firstDay, "微信 ¥12.34", "支付宝 ¥23.45")
+        screenshot("daily-payment-spending-dark")
+    }
+
+    private fun paymentSpendingBreakdownFitsAtDoubleFontScale() {
+        openApp(scale = 2f)
+        seedPaymentSpendingRecords()
+        showPaymentSpendingLedger()
+        await("200% 字号应显示两种支付渠道净支出") {
+            nodes().any { "微信 ¥" in it.text() } && nodes().any { "支付宝 ¥" in it.text() }
+        }
+        screenshot("payment-spending-font-200")
+        assertPaymentRowLayout("微信 ¥46.90", "支付宝 ¥69.12")
+        assertPaymentTextLayout("微信 ¥46.90")
+        assertPaymentTextLayout("支付宝 ¥69.12")
+        val (firstDay, _) = paymentSpendingEpochDays()
+        assertDayPaymentSummary(firstDay, "微信 ¥12.34", "支付宝 ¥23.45")
+        screenshot("daily-payment-spending-font-200")
+    }
+
+    private fun seedPaymentSpendingRecords() = runBlocking {
+        val (firstDay, secondDay) = paymentSpendingEpochDays()
+        vm.addRecord(1_234, firstDay, "餐饮", "午饭账单", paymentMethod = PaymentMethod.WECHAT).getOrThrow()
+        vm.addRecord(2_345, firstDay, "餐饮", "同日支付宝", paymentMethod = PaymentMethod.ALIPAY).getOrThrow()
+        vm.addRecord(3_456, secondDay, "餐饮", "次日微信", paymentMethod = PaymentMethod.WECHAT).getOrThrow()
+        vm.addRecord(4_567, secondDay, "餐饮", "晚饭账单", paymentMethod = PaymentMethod.ALIPAY).getOrThrow()
+    }
+
+    private fun paymentSpendingEpochDays(): Pair<Long, Long> =
+        YearMonth.now().atDay(1).toEpochDay() to YearMonth.now().atDay(2).toEpochDay()
+
+    private fun showPaymentSpendingLedger() {
+        await("测试账本记录应写入数据库") { vm.allRecords.value.size == 4 }
+        vm.acknowledgeSavedRecord()
+        assertTrue(clickNode("账本")?.config?.getOrNull(SemanticsActions.OnClick)?.action?.invoke() == true)
+        await("切到账本后应显示两种支付渠道金额") {
+            nodes().any { "微信 ¥46.90" in it.text() } &&
+                nodes().any { "支付宝 ¥69.12" in it.text() }
+        }
+    }
+
+    private fun assertPaymentRowLayout(wechatText: String, alipayText: String) {
+        val wechat = nodes().first { wechatText in it.text() }.boundsInRoot
+        val alipay = nodes().first { alipayText in it.text() }.boundsInRoot
+        assertTrue("两渠道应在同一横排", kotlin.math.abs(wechat.top - alipay.top) <= 1f)
+        assertTrue("两渠道文字不能重叠", wechat.right <= alipay.left + 1f)
+    }
+
+    private fun assertDayPaymentSummary(epochDay: Long, wechatText: String, alipayText: String) {
+        val tag = "day-summary-$epochDay"
+        var summary = nodes(merged = false).firstOrNull {
+            it.config.getOrNull(SemanticsProperties.TestTag) == tag
+        }
+        repeat(12) {
+            if (summary != null) return@repeat
+            val scroller = nodes(merged = false).firstOrNull {
+                it.config.getOrNull(SemanticsActions.ScrollBy)?.action != null &&
+                    it.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange) != null
+            } ?: throw AssertionError("找不到列表滚动区域来定位 $tag")
+            assertTrue("无法滚动到 $tag", scroller.config[SemanticsActions.ScrollBy].action!!.invoke(0f, 420f))
+            repeat(3) { frame() }
+            summary = nodes(merged = false).firstOrNull {
+                it.config.getOrNull(SemanticsProperties.TestTag) == tag
+            }
+        }
+        var header = summary ?: throw AssertionError("当前记录列表缺少带日期 tag 的摘要：$tag")
+        val view = composeView() ?: throw AssertionError("缺少 Compose 视图")
+        if (header.boundsInRoot.height + 1 < header.size.height || header.positionInRoot.y < -1 ||
+            header.positionInRoot.y + header.size.height > view.height + 1) {
+            val scroller = generateSequence(header.parent) { it.parent }.firstOrNull {
+                it.config.getOrNull(SemanticsActions.ScrollBy)?.action != null &&
+                    it.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange) != null
+            } ?: throw AssertionError("$tag 被 viewport 裁切且无法滚动到")
+            val viewport = scroller.boundsInRoot
+            val delta = header.positionInRoot.y - viewport.top - (viewport.height - header.size.height) / 2
+            assertTrue("无法将 $tag 滚入 viewport", scroller.config[SemanticsActions.ScrollBy].action!!.invoke(0f, delta))
+            repeat(24) { frame() }
+            header = nodes(merged = false).first {
+                it.config.getOrNull(SemanticsProperties.TestTag) == tag
+            }
+        }
+        assertTrue("$tag 必须完整出现在 viewport 内", header.positionInRoot.y >= -1 &&
+            header.positionInRoot.y + header.size.height <= view.height + 1 &&
+            header.boundsInRoot.height + 1 >= header.size.height)
+
+        val scopedTexts = semanticDescendants(header).filter { it.text().isNotBlank() }.toList()
+        val wechat = scopedTexts.singleOrNull { wechatText in it.text() }
+            ?: throw AssertionError("$tag 中缺少微信摘要 '$wechatText': ${scopedTexts.map { it.text() }}")
+        val alipay = scopedTexts.singleOrNull { alipayText in it.text() }
+            ?: throw AssertionError("$tag 中缺少支付宝摘要 '$alipayText': ${scopedTexts.map { it.text() }}")
+        assertTrue("$tag 两个渠道应在同一排", kotlin.math.abs(wechat.boundsInRoot.top - alipay.boundsInRoot.top) <= 1f)
+        assertTrue("$tag 两个渠道不能重叠", wechat.boundsInRoot.right <= alipay.boundsInRoot.left + 1f)
+        listOf(wechat, alipay).forEach { textNode ->
+            val layouts = mutableListOf<TextLayoutResult>()
+            val action = textNode.config.getOrNull(SemanticsActions.GetTextLayoutResult)?.action
+                ?: throw AssertionError("$tag '${textNode.text()}' 缺少真实 TextLayoutResult")
+            assertTrue(action.invoke(layouts))
+            assertTrue("$tag '${textNode.text()}' 布局结果为空", layouts.isNotEmpty())
+            layouts.forEach { result ->
+                val alignOffset = result.paragraphOffsetX()
+                assertEquals("$tag '${textNode.text()}' 不能截断", result.layoutInput.text.length,
+                    result.getLineEnd(result.lineCount - 1))
+                assertTrue("$tag '${textNode.text()}' 纵向文字需容纳在行框中",
+                    result.multiParagraph.height <= result.size.height + 1 &&
+                        textNode.boundsInRoot.height + 1 >= result.multiParagraph.height)
+                for (line in 0 until result.lineCount) {
+                    assertFalse("$tag '${textNode.text()}' 不能省略文字", result.isLineEllipsized(line))
+                    val left = result.getLineLeft(line) + alignOffset
+                    val right = result.getLineRight(line) + alignOffset
+                    assertTrue("$tag '${textNode.text()}' 文字不能超出自身宽度", left >= -1 && right <= result.size.width + 1)
+                    assertTrue("$tag '${textNode.text()}' 文字不能被父布局裁切",
+                        textNode.positionInRoot.x + left >= header.boundsInRoot.left - 1 &&
+                            textNode.positionInRoot.x + right <= header.boundsInRoot.right + 1)
+                    assertTrue("$tag '${textNode.text()}' 文字不能被 viewport 裁切",
+                        textNode.positionInRoot.y >= -1 && textNode.positionInRoot.y + textNode.size.height <= view.height + 1)
+                }
+            }
+        }
+    }
+
+    private fun assertPaymentTextLayout(label: String) {
+        var node = nodes().firstOrNull { label in it.text() }
+            ?: throw AssertionError("缺少支付渠道净支出文字：$label")
+        val view = composeView() ?: throw AssertionError("缺少 Compose 视图")
+        if (node.boundsInRoot.height + 1 < node.size.height || node.positionInRoot.y < -1 ||
+            node.positionInRoot.y + node.size.height > view.height + 1) {
+            val raw = nodes(merged = false).first { it.id == node.id }
+            val scroller = generateSequence(raw.parent) { it.parent }.firstOrNull {
+                it.config.getOrNull(SemanticsActions.ScrollBy)?.action != null &&
+                    it.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange) != null
+            } ?: throw AssertionError("$label 被裁切且页面无法滚动到")
+            val viewport = scroller.boundsInRoot
+            val delta = node.positionInRoot.y - viewport.top - (viewport.height - node.size.height) / 2
+            assertTrue("无法滚动以显示 $label", scroller.config[SemanticsActions.ScrollBy].action!!.invoke(0f, delta))
+            repeat(40) { frame() }
+            node = nodes().first { label in it.text() }
+        }
+        assertTrue("$label 节点应完整位于页面内", node.positionInRoot.y >= -1 &&
+            node.positionInRoot.y + node.size.height <= view.height + 1 &&
+            node.boundsInRoot.height + 1 >= node.size.height)
+        val raw = nodes(merged = false).first { it.id == node.id }
+        val textNodes = semanticDescendants(raw).filter {
+            it.config.getOrNull(SemanticsActions.GetTextLayoutResult)?.action != null
+        }.toList()
+        assertTrue("$label 应提供真实文字布局结果", textNodes.isNotEmpty())
+        textNodes.forEach { textNode ->
+            val layouts = mutableListOf<TextLayoutResult>()
+            assertTrue(textNode.config[SemanticsActions.GetTextLayoutResult].action!!.invoke(layouts))
+            assertTrue(layouts.isNotEmpty())
+            layouts.forEach { result ->
+                val alignOffset = result.paragraphOffsetX()
+                assertEquals("$label 不能被截断", result.layoutInput.text.length,
+                    result.getLineEnd(result.lineCount - 1))
+                for (line in 0 until result.lineCount) {
+                    assertFalse("$label 不能省略文字", result.isLineEllipsized(line))
+                    val left = result.getLineLeft(line) + alignOffset
+                    val right = result.getLineRight(line) + alignOffset
+                    assertTrue("$label 横向绘制不能裁切", textNode.positionInRoot.x + left >= textNode.boundsInRoot.left - 1 &&
+                        textNode.positionInRoot.x + right <= textNode.boundsInRoot.right + 1)
+                }
+                assertTrue("$label 纵向绘制不能裁切", textNode.boundsInRoot.height + 1 >= result.multiParagraph.height &&
+                    textNode.positionInRoot.y >= node.boundsInRoot.top - 1 &&
+                    textNode.positionInRoot.y + textNode.size.height <= node.boundsInRoot.bottom + 1)
+            }
+        }
+    }
+
     private fun openApp(darkTheme: Boolean = false, scale: Float = 1f) {
         dark = darkTheme
         fontScale = scale
@@ -351,6 +574,16 @@ class UiLayoutTest {
         decor.measure(View.MeasureSpec.makeMeasureSpec(360, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY))
         decor.layout(0, 0, 360, 800)
+        // Robolectric does not always propagate a Compose layout request through an unchanged ViewGroup.
+        composeView()?.let { view ->
+            if (view.isLayoutRequested) {
+                view.measure(View.MeasureSpec.makeMeasureSpec(view.width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(view.height, View.MeasureSpec.EXACTLY))
+                view.layout(view.left, view.top, view.right, view.bottom)
+            }
+            view.javaClass.methods.first { it.name == "measureAndLayoutForTest" && it.parameterCount == 0 }
+                .invoke(view)
+        }
         ShadowDialog.getLatestDialog()?.takeIf { it.isShowing }?.window?.decorView?.let { dialogDecor ->
             dialogDecor.measure(View.MeasureSpec.makeMeasureSpec(360, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.AT_MOST))

@@ -21,6 +21,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -77,6 +78,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -368,13 +370,15 @@ private fun SearchResults(
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         item(key = "search-summary") {
-            Text(
-                text = "找到 ${state.count} 条 · 净支出 ¥${formatAmount(state.totalCents)}" +
-                    if (state.excludedTotalCents != 0L) " · 代付 ¥${formatAmount(state.excludedTotalCents)}" else "",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 8.dp)
-            )
+            Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                Text(
+                    text = "找到 ${state.count} 条 · 净支出 ¥${formatAmount(state.totalCents)}" +
+                        if (state.excludedTotalCents != 0L) " · 代付 ¥${formatAmount(state.excludedTotalCents)}" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                PaymentSpendBreakdown(state.paymentSpentCents, MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         if (state.days.isEmpty()) {
             item(key = "search-empty") {
@@ -526,11 +530,14 @@ private fun BalanceCard(state: HomeState, onPrev: () -> Unit, onNext: () -> Unit
                 Spacer(Modifier.height(8.dp))
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                     verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        "净支出 ¥${formatAmount(state.spentCents)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = onContainer
-                    )
+                    Column {
+                        Text(
+                            "净支出 ¥${formatAmount(state.spentCents)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = onContainer
+                        )
+                        PaymentSpendBreakdown(state.paymentSpentCents, onContainer)
+                    }
                     Text(
                         "预算 ¥${formatAmount(state.budgetCents)}",
                         style = MaterialTheme.typography.bodySmall,
@@ -560,30 +567,57 @@ private fun BalanceCard(state: HomeState, onPrev: () -> Unit, onNext: () -> Unit
 }
 
 @Composable
+private fun PaymentSpendBreakdown(paymentSpentCents: Map<String, Long>, color: Color) {
+    Row(Modifier.width(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "微信 ¥${formatAmount(paymentSpentCents[PaymentMethod.WECHAT] ?: 0L)}",
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = color
+        )
+        Text(
+            "支付宝 ¥${formatAmount(paymentSpentCents[PaymentMethod.ALIPAY] ?: 0L)}",
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = color
+        )
+    }
+}
+
+@Composable
 private fun DayHeader(day: DayGroup, modifier: Modifier = Modifier, showYear: Boolean = false) {
-    FlowRow(
+    Column(
         modifier
             .fillMaxWidth()
-            .padding(top = 20.dp, bottom = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+            .padding(top = 20.dp, bottom = 4.dp)
+            .testTag("day-summary-${day.date.toEpochDay()}"),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Text(
-            text = day.date.format(
-                DateTimeFormatter.ofPattern(
-                    if (showYear) "yyyy年M月d日 EEE" else "M月d日 EEE",
-                    Locale.CHINA
+        FlowRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = day.date.format(
+                    DateTimeFormatter.ofPattern(
+                        if (showYear) "yyyy年M月d日 EEE" else "M月d日 EEE",
+                        Locale.CHINA
+                    )
+                ),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "净支出 ¥${formatAmount(day.dayTotalCents)}" +
+                        if (day.excludedTotalCents != 0L) " · 代付 ¥${formatAmount(day.excludedTotalCents)}" else "",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            ),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold
-        )
-        Text(
-            text = "净支出 ¥${formatAmount(day.dayTotalCents)}" +
-                if (day.excludedTotalCents != 0L) " · 代付 ¥${formatAmount(day.excludedTotalCents)}" else "",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+                PaymentSpendBreakdown(day.paymentSpentCents, MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 

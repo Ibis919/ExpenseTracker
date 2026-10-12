@@ -1,5 +1,5 @@
 {
-  "version": "0.11.1",
-  "notes": "金额栏新增四则计算器，支持连续运算与结果预览；可将有效金额填入当前表单，填入不会自动保存流水。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.1/apk/latest.apk"
+  "version": "0.11.2",
+  "notes": "月度和每日净支出下显示微信、支付宝金额分项，并随搜索与组合筛选同步更新；按日统计支出减退款，排除代付、收入和转账。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.2/apk/latest.apk"
 }
