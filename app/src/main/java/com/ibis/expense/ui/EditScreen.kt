@@ -115,7 +115,7 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
     val emoji = remember(categories) { categories.associate { it.name to it.emoji } }
 
     fun save() {
-        if (!canSave) return
+        if (saving || !canSave) return
         saving = true
         onBusyChange(true)
         saveError = null

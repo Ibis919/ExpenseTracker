@@ -102,6 +102,7 @@ class UiLayoutTest {
 
     private fun lightDefaultSelectionAndSuccessfulSaveReturnToTheVisibleLedger() {
         openApp()
+        runBlocking { vm.setAccountBalance(PaymentMethod.WECHAT, 10_000) }
         assertDefaultSelection()
         screenshot("light-record")
         val savedCategory = vm.categoriesState.value.first().name
@@ -115,13 +116,24 @@ class UiLayoutTest {
             clickNode("保存并返回账本")?.config?.getOrNull(SemanticsProperties.Disabled) == null &&
                 clickNode("保存并返回账本") != null
         }
-        assertTrue(clickNode("保存并返回账本")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        val save = clickNode("保存并返回账本")!!.config[SemanticsActions.OnClick].action!!
+        // Reuse the callback before a frame can recompose the button with saving = true.
+        assertTrue(save.invoke())
+        assertTrue(save.invoke())
         await("保存完成后应切换到账本并显示新流水") {
             nodes().any { "原生UI保存验收" in it.text() && it.boundsInRoot.height > 0 } &&
                 clickNode("✓ 账本")?.config?.getOrNull(SemanticsProperties.Selected) == true
         }
         assertEquals("", vm.searchQuery.value)
         screenshot("light-ledger-saved")
+        await("保存后的微信余额应与当前流水一致") {
+            vm.accountBalances.value[PaymentMethod.WECHAT] ==
+                10_000L - vm.allRecords.value.sumOf { it.amountCents }
+        }
+        assertEquals("重组前连续保存只能产生一条流水", 1,
+            vm.allRecords.value.count { it.note == "原生UI保存验收" })
+        assertEquals("28元支出只能扣款一次", 7_200L,
+            vm.accountBalances.value[PaymentMethod.WECHAT])
         assertTrue(clickNode("统计")!!.config[SemanticsActions.OnClick].action!!.invoke())
         await("统计应展示保存的分类、金额及6/12个月控件") {
             val content = nodes().map { it.text() }

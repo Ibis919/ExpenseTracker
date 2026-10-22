@@ -1,5 +1,5 @@
 {
-  "version": "0.11.2",
-  "notes": "月度和每日净支出下显示微信、支付宝金额分项，并随搜索与组合筛选同步更新；按日统计支出减退款，排除代付、收入和转账。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.2/apk/latest.apk"
+  "version": "0.11.3",
+  "notes": "修复界面刷新前快速连续保存导致同一笔重复记账、账户余额重复扣减的问题。已有流水请先核对，确认重复的记录可手动删除；需要时再校准余额。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.3/apk/latest.apk"
 }
