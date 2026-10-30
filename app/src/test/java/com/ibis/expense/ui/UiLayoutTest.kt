@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.view.MotionEvent
 import android.view.View
 import android.app.Dialog
 import android.view.ViewGroup
@@ -43,6 +45,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows
 import org.robolectric.shadows.ShadowDialog
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowWindowManagerImpl
 import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
@@ -81,6 +85,12 @@ class UiLayoutTest {
         File("build/reports/native-ui").mkdirs()
         File("build/reports/native-ui/text-layout.txt").writeText("")
         // Compose caches AndroidUiDispatcher.Main. Keep all scenarios on one Robolectric looper.
+        categoryDragCanBeCancelledAndSaved()
+        closeActivity()
+        categorySortFitsDarkModeAndDoubleFontScale()
+        closeActivity()
+        categoryDragScrollsToOffscreenItems()
+        closeActivity()
         lightDefaultSelectionAndSuccessfulSaveReturnToTheVisibleLedger()
         closeActivity()
         calculatorPreviewApplyCancelAndSaveInLightTheme()
@@ -98,6 +108,189 @@ class UiLayoutTest {
         paymentSpendingBreakdownFitsInDarkTheme()
         closeActivity()
         paymentSpendingBreakdownFitsAtDoubleFontScale()
+    }
+
+    private fun categoryDragScrollsToOffscreenItems() {
+        openApp()
+        val originalNames = vm.categoriesState.value.map { it.name }
+        val addedNames = (1..8).map { "自定义$it" }
+        repeat(8) { index ->
+            val name = addedNames[index]
+            vm.addCategory(name, "📦")
+            await("自定义分类应保存") { vm.categoriesState.value.any { it.name == name } }
+        }
+        showCategoryManagement()
+        assertTrue(clickNode("调整分类顺序")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("长列表应展示排序手柄") { taggedNode("category-handle-餐饮") != null }
+        val viewport = taggedNode("category-reorder-list")!!.boundsInRoot
+        dragCategoryTo("餐饮", viewport.bottom - 12f, waitForTag = "category-row-自定义8")
+        assertTrue(clickNode("完成")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("拖动到列表边缘应滚动并保存到屏幕外") {
+            clickNode("调整分类顺序") != null && vm.categoriesState.value.indexOfFirst { it.name == "餐饮" } >= 7
+        }
+        addedNames.forEach(vm::deleteCategory)
+        await("测试分类应清理完毕") { vm.categoriesState.value.none { it.name in addedNames } }
+        runBlocking { vm.reorderCategories(originalNames).getOrThrow() }
+        await("恢复测试前的分类顺序") { vm.categoriesState.value.map { it.name } == originalNames }
+    }
+
+    private fun categoryDragCanBeCancelledAndSaved() {
+        openApp()
+        val originalNames = vm.categoriesState.value.map { it.name }
+        showCategoryManagement()
+        assertTrue(clickNode("调整分类顺序")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("分类排序页面应展示拖动手柄") { taggedNode("category-handle-交通") != null }
+        screenshot("category-sort-light")
+
+        dragCategoryAbove("交通", "餐饮")
+        await("拖动后交通应位于餐饮上方") {
+            val traffic = taggedNode("category-row-交通")
+            val food = taggedNode("category-row-餐饮")
+            traffic != null && food != null && traffic.positionInRoot.y < food.positionInRoot.y
+        }
+        assertEquals("未完成前不应写入数据库", "餐饮", vm.categoriesState.value.first().name)
+        val cancel = nodes().first {
+            it.config.getOrNull(SemanticsActions.OnClick)?.action != null &&
+                it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty().contains("取消排序")
+        }
+        assertTrue(cancel.config[SemanticsActions.OnClick].action!!.invoke())
+        await("取消后应返回分类管理") { clickNode("调整分类顺序") != null }
+        assertTrue(clickNode("调整分类顺序")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("取消后应保留原顺序") {
+            val traffic = taggedNode("category-row-交通")
+            val food = taggedNode("category-row-餐饮")
+            traffic != null && food != null && food.positionInRoot.y < traffic.positionInRoot.y
+        }
+
+        dragCategoryAbove("交通", "餐饮")
+        await("再次拖动后交通应位于餐饮上方") {
+            val traffic = taggedNode("category-row-交通")
+            val food = taggedNode("category-row-餐饮")
+            traffic != null && food != null && traffic.positionInRoot.y < food.positionInRoot.y
+        }
+        screenshot("category-sort-after-drag")
+        assertTrue(clickNode("完成")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("完成后应保存分类顺序") {
+            clickNode("调整分类顺序") != null && vm.categoriesState.value.firstOrNull()?.name == "交通"
+        }
+        renderApp(controller.get())
+        await("记一笔应按新顺序显示分类") {
+            clickNode("✓ 🚗 交通") != null && clickNode("🍜 餐饮") != null
+        }
+        val traffic = clickNode("✓ 🚗 交通")!!.positionInRoot
+        val food = clickNode("🍜 餐饮")!!.positionInRoot
+        assertTrue("记一笔的交通分类应排在餐饮之前", traffic.y < food.y || (traffic.y == food.y && traffic.x < food.x))
+        runBlocking { vm.reorderCategories(originalNames).getOrThrow() }
+        await("恢复测试前的分类顺序") { vm.categoriesState.value.map { it.name } == originalNames }
+    }
+
+    private fun categorySortFitsDarkModeAndDoubleFontScale() {
+        openApp(darkTheme = true, scale = 2f)
+        val firstName = vm.categoriesState.value.first().name
+        val movableName = vm.categoriesState.value[1].name
+        showCategoryManagement()
+        assertControlLayout("调整分类顺序")
+        assertTrue(clickNode("调整分类顺序")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("大字号下排序手柄应可见") { taggedNode("category-handle-$movableName") != null }
+        screenshot("category-sort-dark-font-200")
+        assertControlLayout("完成")
+        val handle = taggedNode("category-handle-$movableName")!!
+        assertTrue("排序手柄触点不能小于48dp", handle.size.width >= 48 && handle.size.height >= 48)
+        val accessible = nodes().firstOrNull {
+            it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty().contains("调整${movableName}顺序") &&
+                it.config.getOrNull(SemanticsActions.OnClick)?.action != null
+        }
+        assertTrue("排序手柄应可通过无障碍操作", accessible != null)
+        val moveUp = accessible!!.config.getOrNull(SemanticsActions.CustomActions).orEmpty()
+            .firstOrNull { it.label == "上移一位" }
+        assertTrue("排序手柄应提供上移操作", moveUp != null)
+        assertTrue("无障碍上移应成功", moveUp!!.action())
+        await("无障碍操作应调整顺序") {
+            val moved = taggedNode("category-row-$movableName")
+            val first = taggedNode("category-row-$firstName")
+            moved != null && first != null && moved.positionInRoot.y < first.positionInRoot.y
+        }
+
+        val windowManager = Shadow.extract<ShadowWindowManagerImpl>(controller.get().windowManager)
+        val previousViews = windowManager.views.toSet()
+        tapCategoryHandle(movableName)
+        var popup: View? = null
+        await("点按手柄应打开移动菜单") {
+            popup = windowManager.views.firstOrNull { it !in previousViews && composeView(it) != null }
+            popup != null
+        }
+        val menuRoot = popup!!
+        await("移动菜单应展示下移选项") { clickNode("下移一位", menuRoot) != null }
+        assertTrue(clickNode("下移一位", menuRoot)!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("点按移动菜单应调整顺序") {
+            val moved = taggedNode("category-row-$movableName")
+            val first = taggedNode("category-row-$firstName")
+            moved != null && first != null && first.positionInRoot.y < moved.positionInRoot.y
+        }
+    }
+
+    private fun showCategoryManagement() {
+        controller.get().setContent { ExpenseTheme(darkTheme = dark) { CategoryManageScreen(vm, onDone = {}) } }
+        await("分类管理应展示排序入口") { clickNode("调整分类顺序") != null }
+    }
+
+    private fun taggedNode(tag: String): SemanticsNode? = nodes(merged = false).firstOrNull {
+        it.config.getOrNull(SemanticsProperties.TestTag) == tag
+    }
+
+    private fun dragCategoryAbove(name: String, target: String) {
+        val destination = taggedNode("category-row-$target") ?: throw AssertionError("缺少 $target 的行")
+        dragCategoryTo(name, destination.boundsInRoot.center.y)
+    }
+
+    private fun tapCategoryHandle(name: String) {
+        val handle = taggedNode("category-handle-$name") ?: throw AssertionError("缺少 $name 的手柄")
+        val origin = IntArray(2)
+        composeView()!!.getLocationInWindow(origin)
+        val x = origin[0] + handle.boundsInRoot.center.x
+        val y = origin[1] + handle.boundsInRoot.center.y
+        val downTime = SystemClock.uptimeMillis()
+        fun dispatch(action: Int) {
+            val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, x, y, 0)
+            try { assertTrue(controller.get().dispatchTouchEvent(event)) } finally { event.recycle() }
+        }
+        dispatch(MotionEvent.ACTION_DOWN)
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(40))
+        dispatch(MotionEvent.ACTION_UP)
+    }
+
+    private fun dragCategoryTo(name: String, targetY: Float, waitForTag: String? = null) {
+        val source = taggedNode("category-handle-$name") ?: throw AssertionError("缺少 $name 的手柄")
+        val origin = IntArray(2)
+        composeView()!!.getLocationInWindow(origin)
+        val x = origin[0] + source.boundsInRoot.center.x
+        val startY = origin[1] + source.boundsInRoot.center.y
+        val endY = origin[1] + targetY
+        val downTime = SystemClock.uptimeMillis()
+        fun dispatch(action: Int, y: Float) {
+            val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, x, y, 0)
+            try {
+                assertTrue("拖动事件应由页面处理", controller.get().dispatchTouchEvent(event))
+            } finally {
+                event.recycle()
+            }
+        }
+        dispatch(MotionEvent.ACTION_DOWN, startY)
+        await("长按应进入拖动状态") {
+            taggedNode("category-row-$name")?.config?.getOrNull(SemanticsProperties.StateDescription) == "正在拖动"
+        }
+        repeat(6) { step ->
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(16))
+            dispatch(MotionEvent.ACTION_MOVE, startY + (endY - startY) * (step + 1) / 6f)
+            frame()
+            if (step == 0) {
+                assertEquals("长按手柄后应进入拖动状态", "正在拖动", taggedNode("category-row-$name")
+                    ?.config?.getOrNull(SemanticsProperties.StateDescription))
+            }
+        }
+        if (waitForTag != null) await("边缘拖动应滚动到屏幕外的分类") { taggedNode(waitForTag) != null }
+        dispatch(MotionEvent.ACTION_UP, endY)
+        repeat(6) { frame() }
     }
 
     private fun lightDefaultSelectionAndSuccessfulSaveReturnToTheVisibleLedger() {

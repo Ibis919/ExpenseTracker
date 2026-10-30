@@ -289,6 +289,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    suspend fun reorderCategories(orderedNames: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            db.withTransaction {
+                val currentNames = dao.getAllCategoriesOnce().map { it.name }
+                require(orderedNames.size == currentNames.size && orderedNames.toSet() == currentNames.toSet()) {
+                    "分类列表已发生变化，请返回后重新排序。"
+                }
+                orderedNames.forEachIndexed { index, name ->
+                    check(dao.updateCategorySort(name, index + 1) == 1) {
+                        "分类列表已发生变化，请返回后重新排序。"
+                    }
+                }
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun renameCategory(oldName: String, newName: String, emoji: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val trimmed = newName.trim()

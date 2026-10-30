@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import androidx.room.Room
 import androidx.lifecycle.ViewModelStore
+import com.ibis.expense.data.BackupManager
 import com.ibis.expense.data.ExpenseDatabase
 import com.ibis.expense.data.ExpenseRecord
 import com.ibis.expense.data.MIGRATION_4_5
@@ -62,6 +63,46 @@ class AppViewModelTest {
         store.clear()
         db.close()
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun categoryOrderPersistsAndIsIncludedInCompleteBackups() = runBlocking {
+        val original = withTimeout(5_000) { vm.categoriesState.first { it.size >= 7 } }
+        val names = listOf("交通") + original.map { it.name }.filterNot { it == "交通" }
+
+        vm.reorderCategories(names).getOrThrow()
+        withTimeout(5_000) { vm.categoriesState.first { it.map { category -> category.name } == names } }
+        assertEquals(names, db.dao().getAllCategoriesOnce().map { it.name })
+
+        val snapshot = BackupManager.capture(app, db)
+        val restored = BackupManager.decode(BackupManager.encode(snapshot))
+        assertEquals(names, restored.categories.sortedBy { it.sortOrder }.map { it.name })
+
+        vm.addCategory("早餐", "☕")
+        val withNewCategory = withTimeout(5_000) {
+            vm.categoriesState.first { it.any { category -> category.name == "早餐" } }
+        }
+        assertEquals(names + "早餐", withNewCategory.map { it.name })
+        vm.renameCategory("交通", "出行", "🚗")
+        val renamed = withTimeout(5_000) {
+            vm.categoriesState.first { it.firstOrNull()?.name == "出行" }
+        }
+        assertEquals(listOf("出行") + names.drop(1) + "早餐", renamed.map { it.name })
+    }
+
+    @Test
+    fun invalidOrFailedCategoryReorderLeavesThePreviousOrderIntact() = runBlocking {
+        val names = withTimeout(5_000) { vm.categoriesState.first { it.size >= 7 } }.map { it.name }
+        assertTrue(vm.reorderCategories(names.dropLast(1) + names.first()).isFailure)
+        assertEquals(names, db.dao().getAllCategoriesOnce().map { it.name })
+
+        db.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER reject_category_reorder BEFORE UPDATE OF sortOrder ON categories " +
+                "WHEN NEW.name = '餐饮' BEGIN SELECT RAISE(ABORT, 'rejected'); END"
+        )
+        val reordered = listOf("交通", "餐饮") + names.filterNot { it == "交通" || it == "餐饮" }
+        assertTrue(vm.reorderCategories(reordered).isFailure)
+        assertEquals(names, db.dao().getAllCategoriesOnce().map { it.name })
     }
 
     @Test

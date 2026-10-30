@@ -1,5 +1,5 @@
 {
-  "version": "0.11.3",
-  "notes": "修复界面刷新前快速连续保存导致同一笔重复记账、账户余额重复扣减的问题。已有流水请先核对，确认重复的记录可手动删除；需要时再校准余额。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.3/apk/latest.apk"
+  "version": "0.11.4",
+  "notes": "分类管理新增排序：长按右侧图标拖动，或点按图标上下移动；保存后记账页面同步使用新顺序。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.4/apk/latest.apk"
 }

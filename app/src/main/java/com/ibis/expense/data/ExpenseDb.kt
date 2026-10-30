@@ -177,6 +177,9 @@ interface ExpenseDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertCategory(category: Category)
 
+    @Query("UPDATE categories SET sortOrder = :sortOrder WHERE name = :name")
+    suspend fun updateCategorySort(name: String, sortOrder: Int): Int
+
     @Query("UPDATE categories SET name = :newName, emoji = :emoji WHERE name = :oldName")
     suspend fun renameCategoryRow(oldName: String, newName: String, emoji: String)
 
