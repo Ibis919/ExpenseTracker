@@ -1,5 +1,5 @@
 {
-  "version": "0.12.1",
-  "notes": "周期记账的「每月几号」改为可选：留空的规则不再自动记账，到账后在列表里点「记一笔」按当天补记，同一规则每月只记一次，记完显示「本月已记」；填了日期的规则行为不变。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.12.1/apk/latest.apk"
+  "version": "0.12.2",
+  "notes": "周期记账规则现在会像快捷模板一样显示在「记一笔」页面：点一下带入金额、分类、账户，可改金额后保存，这笔会自动挂到该规则上，列表随即显示「本月已记」。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.12.2/apk/latest.apk"
 }

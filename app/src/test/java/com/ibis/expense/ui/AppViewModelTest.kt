@@ -856,6 +856,74 @@ class AppViewModelTest {
         Unit
     }
 
+    @Test
+    fun manualRecordLinkedToARecurringRuleCountsAsRecordedThisMonth() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.WECHAT, 10_000)
+        val ruleId = vm.saveRecurring(null, 1_200, 0, "娱乐", "会员", PaymentMethod.WECHAT).getOrThrow()
+
+        val recordId = vm.addRecord(1_200, day, "娱乐", "会员", paymentMethod = PaymentMethod.WECHAT,
+            type = TransactionType.EXPENSE, recurringId = ruleId).getOrThrow()
+
+        val record = db.dao().getAllOnce().single()
+        assertEquals(recordId, record.id)
+        assertEquals(ruleId, record.recurringId)
+        withTimeout(5_000) { vm.recurringRecordedThisMonth.first { ruleId in it } }
+        assertEquals(1, db.dao().countRecurringInstance(ruleId, day - 31, day))
+        Unit
+    }
+
+    @Test
+    fun manualRecordWithADeletedRecurringRuleFailsWithoutWriting() = runBlocking {
+        val failure = vm.addRecord(1_200, day, "娱乐", "会员", paymentMethod = PaymentMethod.WECHAT,
+            type = TransactionType.EXPENSE, recurringId = 999)
+
+        assertTrue(failure.isFailure)
+        assertTrue(failure.exceptionOrNull()!!.message!!.contains("周期规则已删除"))
+        assertTrue(db.dao().getAllOnce().isEmpty())
+        assertEquals(null, vm.savedRecordId.value)
+        Unit
+    }
+
+    @Test
+    fun transferAndRefundRecordsIgnoreTheRecurringLink() = runBlocking {
+        val ruleId = vm.saveRecurring(null, 1_200, 0, "娱乐", "会员", PaymentMethod.WECHAT).getOrThrow()
+        val expenseId = vm.addRecord(5_000, day, "购物", "原支出").getOrThrow()
+
+        vm.addRecord(1_000, day, "转账", "内部调拨", paymentMethod = PaymentMethod.WECHAT,
+            type = TransactionType.TRANSFER, transferTo = PaymentMethod.ALIPAY, recurringId = ruleId).getOrThrow()
+        vm.addRecord(500, day, "购物", "退款", type = TransactionType.REFUND,
+            relatedRecordId = expenseId, recurringId = ruleId).getOrThrow()
+
+        val records = db.dao().getAllOnce()
+        assertEquals(3, records.size)
+        assertTrue("转账和退款不应挂到周期规则上", records.none { it.recurringId != 0L })
+        assertEquals(setOf(TransactionType.EXPENSE, TransactionType.TRANSFER, TransactionType.REFUND),
+            records.map { it.type }.toSet())
+        Unit
+    }
+
+    @Test
+    fun manualIncomeLinkedToARecurringRuleMatchesAutoGeneration() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.ALIPAY, 5_000)
+        val ruleId = vm.saveRecurring(null, 1_200, 0, "收入", "工资", PaymentMethod.ALIPAY, TransactionType.INCOME).getOrThrow()
+
+        val recordId = vm.addRecord(1_200, day, "收入", "工资", paymentMethod = PaymentMethod.ALIPAY,
+            type = TransactionType.INCOME, recurringId = ruleId).getOrThrow()
+
+        val record = db.dao().getAllOnce().single()
+        assertEquals(ruleId, record.recurringId)
+        assertEquals(TransactionType.INCOME, record.type)
+        assertEquals("收入", record.category)
+        val balances = withTimeout(5_000) { vm.accountBalances.first { it[PaymentMethod.ALIPAY] == 6_200L } }
+        assertEquals("手动记入的收入应增加账户余额", 6_200L, balances[PaymentMethod.ALIPAY])
+        val home = withTimeout(5_000) {
+            vm.homeState.first { it?.days?.flatMap { d -> d.records }?.any { r -> r.id == recordId } == true }!!
+        }
+        assertEquals("手动记入的收入不能计入消费", 0L, home.spentCents)
+        withTimeout(5_000) { vm.recurringRecordedThisMonth.first { ruleId in it } }
+        Unit
+    }
+
     private fun record() = ExpenseRecord(
         amountCents = 1234,
         epochDay = day,

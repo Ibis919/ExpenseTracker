@@ -403,7 +403,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun addRecord(amountCents: Long, epochDay: Long, category: String, note: String, excluded: Boolean = false, paymentMethod: String = PaymentMethod.WECHAT,
-        type: String = TransactionType.EXPENSE, transferTo: String = "", relatedRecordId: Long = 0): Result<Long> {
+        type: String = TransactionType.EXPENSE, transferTo: String = "", relatedRecordId: Long = 0, recurringId: Long = 0): Result<Long> {
         val result = withContext(Dispatchers.IO) {
             try {
                 Result.success(db.withTransaction {
@@ -411,8 +411,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val candidate = normalizeRefund(ExpenseRecord(amountCents = amountCents, epochDay = epochDay,
                         createdAt = System.currentTimeMillis(), category = category, note = note.trim(),
                         excluded = excluded, paymentMethod = paymentMethod, type = type,
-                        transferTo = transferTo, relatedRecordId = relatedRecordId), records)
+                        transferTo = transferTo, relatedRecordId = relatedRecordId,
+                        recurringId = if (type in listOf(TransactionType.EXPENSE, TransactionType.INCOME)) recurringId else 0),
+                        records)
                     validateTransactions(records + candidate)
+                    if (candidate.recurringId > 0) {
+                        require(dao.getAllRecurringOnce().any { it.id == candidate.recurringId }) { "周期规则已删除" }
+                    }
                     dao.insert(candidate)
                 })
             } catch (e: CancellationException) {

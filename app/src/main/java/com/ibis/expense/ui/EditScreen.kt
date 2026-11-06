@@ -63,6 +63,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ibis.expense.data.RecordTemplate
+import com.ibis.expense.data.RecurringExpense
 import com.ibis.expense.data.ExpenseRecord
 import com.ibis.expense.data.TransactionType
 import java.time.LocalDate
@@ -75,6 +76,8 @@ private const val MILLIS_PER_DAY = 86_400_000L
 fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyChange: (Boolean) -> Unit = {}) {
     val categories by vm.categoriesState.collectAsState()
     val templates by vm.templatesState.collectAsState()
+    val recurringRules by vm.recurringState.collectAsState()
+    val recurringRecorded by vm.recurringRecordedThisMonth.collectAsState()
     val records by vm.allRecords.collectAsState()
     var amount by rememberSaveable(initial?.id) { mutableStateOf(initial?.let { centsToInput(it.amountCents) } ?: "") }
     var epochDay by rememberSaveable(initial?.id) { mutableStateOf(initial?.epochDay ?: LocalDate.now().toEpochDay()) }
@@ -90,6 +93,7 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showAmountCalculator by rememberSaveable { mutableStateOf(false) }
     var deleteTemplateTarget by remember { mutableStateOf<RecordTemplate?>(null) }
+    var selectedRuleId by rememberSaveable(initial?.id) { mutableStateOf(0L) }
     var saving by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -125,7 +129,8 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
                     vm.addRecord(amountCents!!, epochDay, effectiveCategory!!, note,
                         excluded = type == TransactionType.EXPENSE && excluded, paymentMethod = paymentMethod,
                         type = type, transferTo = if (type == TransactionType.TRANSFER) transferTo else "",
-                        relatedRecordId = if (type == TransactionType.REFUND) relatedId else 0)
+                        relatedRecordId = if (type == TransactionType.REFUND) relatedId else 0,
+                        recurringId = if (type == TransactionType.EXPENSE || type == TransactionType.INCOME) selectedRuleId else 0)
                 } else {
                     vm.updateRecord(initial, amountCents!!, epochDay, effectiveCategory!!, note,
                         excluded = type == TransactionType.EXPENSE && excluded, paymentMethod = paymentMethod,
@@ -184,6 +189,7 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
                 TransactionType.ALL.forEach { value ->
                     FilterChip(selected = type == value, onClick = {
                         type = value
+                        selectedRuleId = 0
                         saveError = null
                         if (value == TransactionType.TRANSFER && transferTo == paymentMethod) {
                             transferTo = if (paymentMethod == PaymentMethod.WECHAT) PaymentMethod.ALIPAY else PaymentMethod.WECHAT
@@ -252,7 +258,20 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
                     label = { Text(if (excluded) "✓ 代付 · 不占预算" else "帮别人代付") },
                     border = if (excluded) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null)
                 if (excluded) Text("不计消费预算和统计，仍扣支付账户余额。", style = MaterialTheme.typography.bodySmall)
-                if (initial == null) {
+            }
+            if (initial == null && (type == TransactionType.EXPENSE || type == TransactionType.INCOME)) {
+                if (recurringRules.isNotEmpty()) {
+                    Spacer(Modifier.height(20.dp))
+                    RecurringBar(recurringRules, recurringRecorded, selectedRuleId, !saving) { r ->
+                        amount = centsToInput(r.amountCents)
+                        selectedCategory = r.category
+                        note = r.note
+                        paymentMethod = r.paymentMethod
+                        type = r.type
+                        selectedRuleId = r.id
+                    }
+                }
+                if (type == TransactionType.EXPENSE) {
                     Spacer(Modifier.height(20.dp))
                     TemplateBar(templates, emoji, amountCents != null && effectiveCategory != null && !saving,
                         onUse = { t -> if (!saving) {
@@ -395,16 +414,61 @@ private fun TemplateBar(
 }
 
 @Composable
+private fun RecurringBar(
+    rules: List<RecurringExpense>,
+    recorded: Set<Long>,
+    selectedRuleId: Long,
+    enabled: Boolean,
+    onUse: (RecurringExpense) -> Unit
+) {
+    Column {
+        Text("🔁 周期记账", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(8.dp))
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items(rules, key = { it.id }) { r ->
+                val income = r.type == TransactionType.INCOME
+                val label = buildString {
+                    append(r.note.lineSequence().firstOrNull()?.take(16)?.ifBlank { r.category } ?: r.category)
+                    append(' ')
+                    append(if (income) "＋¥${formatAmount(r.amountCents)}" else "¥${formatAmount(r.amountCents)}")
+                    append(" · ")
+                    append(r.paymentMethod.ifBlank { "未关联" })
+                    if (r.id in recorded) append(" · 本月已记")
+                }
+                TemplateChip(
+                    label = label,
+                    enabled = enabled,
+                    selected = selectedRuleId == r.id,
+                    onClick = { if (enabled) onUse(r) }
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        val hint = if (selectedRuleId > 0) {
+            "已带入周期规则：改好金额后保存，这笔会记到本月的该规则上"
+        } else {
+            "点按带入金额、分类和账户，可改金额后保存"
+        }
+        Text(hint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
 private fun TemplateChip(
     label: String,
     enabled: Boolean = true,
+    selected: Boolean = false,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null
 ) {
     Surface(
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
+        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null,
         modifier = Modifier.combinedClickable(
             enabled = enabled,
             onClick = onClick,

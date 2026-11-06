@@ -23,6 +23,7 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextAlign
 import com.ibis.expense.App
 import com.ibis.expense.data.ExpenseRecord
+import com.ibis.expense.data.TransactionType
 import com.ibis.expense.ui.theme.ExpenseTheme
 import java.io.File
 import java.time.Duration
@@ -30,10 +31,12 @@ import java.time.LocalDate
 import java.time.YearMonth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -112,6 +115,10 @@ class UiLayoutTest {
         recurringDialogSwitchesBetweenExpenseAndIncome()
         closeActivity()
         recurringDialogFitsDarkModeAndDoubleFontScale()
+        closeActivity()
+        recurringBarFillsTheRecordFormAndLinksTheSavedRecord()
+        closeActivity()
+        recurringBarFitsDarkModeAndDoubleFontScale()
     }
 
     private fun categoryDragScrollsToOffscreenItems() {
@@ -657,6 +664,116 @@ class UiLayoutTest {
         assertControlLayout("✓ 收入", dialogDecor())
         assertControlLayout("保存", dialogDecor())
         screenshot("recurring-dialog-income-dark-font-200", dialogDecor())
+    }
+
+    private fun recurringBarFillsTheRecordFormAndLinksTheSavedRecord() {
+        openApp()
+        runBlocking { vm.setAccountBalance(PaymentMethod.WECHAT, 50_000) }
+        val incomeId = runBlocking {
+            vm.saveRecurring(null, 120_000, 0, "收入", "工资", PaymentMethod.ALIPAY, TransactionType.INCOME).getOrThrow()
+        }
+        val expenseId = runBlocking {
+            vm.saveRecurring(null, 250_000, 0, "娱乐", "房租", PaymentMethod.WECHAT).getOrThrow()
+        }
+        val incomeChip = "工资 ＋¥1200.00 · 支付宝"
+        val expenseChip = "房租 ¥2500.00 · 微信"
+        val selectedHint = "已带入周期规则：改好金额后保存，这笔会记到本月的该规则上"
+
+        await("记一笔页应显示周期记账快捷条") { textNode("🔁 周期记账") != null }
+        scrollRecordFormUntilVisible(incomeChip)
+        await("周期规则应显示为可点按的 chip") { clickNode(incomeChip) != null && clickNode(expenseChip) != null }
+        assertControlLayout(incomeChip)
+        screenshot("recurring-bar-light")
+
+        val unselectedColor = chipBackgroundColor(incomeChip)
+        assertTrue("规则 chip 应可点按",
+            clickNode(incomeChip)!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("点按收入规则应带入金额、备注和账户并切到收入") {
+            amountValue() == "1200" && noteValue() == "工资" &&
+                clickNode("✓ 收入") != null && clickNode("✓ 支付宝") != null &&
+                nodes().none { "🍜 餐饮" in it.text() } && textNode(selectedHint) != null
+        }
+        assertTrue("选中的规则 chip 背景应与未选中时不同", chipBackgroundColor(incomeChip) != unselectedColor)
+        screenshot("recurring-bar-light-selected")
+
+        assertTrue("支出规则 chip 应可点按",
+            clickNode(expenseChip)!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("点按支出规则应带回分类、备注和微信账户") {
+            amountValue() == "2500" && noteValue() == "房租" &&
+                clickNode("✓ 🎮 娱乐") != null && clickNode("✓ 微信") != null && textNode(selectedHint) != null
+        }
+        assertControlLayout(incomeChip)
+
+        assertTrue(clickNode("保存并返回账本")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("保存后应回到账本并显示这笔") {
+            clickNode("✓ 账本")?.config?.getOrNull(SemanticsProperties.Selected) == true &&
+                nodes().any { "房租" in it.text() }
+        }
+        val recorded = runBlocking {
+            withTimeout(5_000) { vm.recurringRecordedThisMonth.first { expenseId in it } }
+        }
+        assertTrue("保存的流水不应挂到另一条规则上", incomeId !in recorded)
+    }
+
+    private fun recurringBarFitsDarkModeAndDoubleFontScale() {
+        openApp(darkTheme = true, scale = 2f)
+        runBlocking {
+            vm.saveRecurring(null, 100, 0, "收入", "工", PaymentMethod.WECHAT, TransactionType.INCOME).getOrThrow()
+        }
+        val chip = "工 ＋¥1.00 · 微信"
+
+        await("200% 字号下记一笔应显示周期记账快捷条") { textNode("🔁 周期记账") != null }
+        scrollRecordFormUntilVisible(chip)
+        await("200% 字号下规则 chip 应可点按") { clickNode(chip) != null }
+        assertControlLayout(chip)
+        assertControlLayout("保存并返回账本")
+        screenshot("recurring-bar-dark-font-200")
+        assertTrue("200% 字号下规则 chip 仍应可点按",
+            clickNode(chip)!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("200% 字号下点按应带入规则") {
+            amountValue() == "1" &&
+                textNode("已带入周期规则：改好金额后保存，这笔会记到本月的该规则上") != null
+        }
+    }
+
+    private fun scrollRecordFormUntilVisible(label: String) {
+        val scroller = nodes(merged = false).firstOrNull {
+            it.config.getOrNull(SemanticsActions.ScrollBy)?.action != null &&
+                it.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange) != null
+        } ?: throw AssertionError("记一笔页缺少可纵向滚动的表单")
+        repeat(10) {
+            val bounds = clickNode(label)?.boundsInRoot
+            if (bounds != null && bounds.height > 0f) return
+            assertTrue("无法滚动记一笔表单", scroller.config[SemanticsActions.ScrollBy].action!!.invoke(0f, 320f))
+            repeat(4) { frame() }
+        }
+        throw AssertionError("滚动后仍看不到 $label")
+    }
+
+    private fun noteValue(): String = nodes()
+        .filter { it.config.getOrNull(SemanticsActions.SetText)?.action != null }.last()
+        .config[SemanticsProperties.EditableText].text
+
+    private fun chipBackgroundColor(label: String): Int {
+        val chip = clickNode(label) ?: throw AssertionError("缺少规则 chip：$label")
+        val bounds = chip.boundsInRoot
+        return screenColorAt(decor, bounds.left + 6f, bounds.center.y)
+    }
+
+    private fun screenColorAt(root: View, rootX: Float, rootY: Float): Int {
+        val compose = composeView(root) ?: throw AssertionError("缺少 Compose 视图")
+        val origin = IntArray(2)
+        compose.getLocationInWindow(origin)
+        val width = root.width.takeIf { it > 0 } ?: 360
+        val height = root.height.takeIf { it > 0 } ?: 800
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        root.draw(Canvas(bitmap))
+        val color = bitmap.getPixel(
+            (origin[0] + rootX).toInt().coerceIn(0, width - 1),
+            (origin[1] + rootY).toInt().coerceIn(0, height - 1)
+        )
+        bitmap.recycle()
+        return color
     }
 
     private fun openRecurringDialog() {
