@@ -2,6 +2,7 @@
 
 package com.ibis.expense.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -46,6 +48,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -57,9 +60,13 @@ import kotlinx.coroutines.launch
 fun RecurringScreen(vm: AppViewModel, onDone: () -> Unit) {
     val items by vm.recurringState.collectAsState()
     val categories by vm.categoriesState.collectAsState()
+    val recorded by vm.recurringRecordedThisMonth.collectAsState()
     val emoji = remember(categories) { categories.associate { it.name to it.emoji } }
     var showAdd by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<RecurringExpense?>(null) }
+    var recordingId by remember { mutableStateOf<Long?>(null) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     Scaffold(
         topBar = {
@@ -92,11 +99,31 @@ fun RecurringScreen(vm: AppViewModel, onDone: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(items, key = { it.id }) { item ->
-                    RecurringItem(item = item, emoji = emoji, onEdit = { editing = item }, onDelete = { vm.deleteRecurring(item.id) })
+                    RecurringItem(
+                        item = item,
+                        emoji = emoji,
+                        recorded = item.id in recorded,
+                        recording = recordingId == item.id,
+                        onEdit = { editing = item },
+                        onRecord = {
+                            if (recordingId == null) {
+                                recordingId = item.id
+                                scope.launch {
+                                    try {
+                                        vm.recordRecurringNow(item.id)
+                                            .onSuccess { Toast.makeText(context, "已记一笔", Toast.LENGTH_SHORT).show() }
+                                            .onFailure { Toast.makeText(context, "记账失败：${it.message ?: "请重试"}", Toast.LENGTH_SHORT).show() }
+                                    } finally { recordingId = null }
+                                }
+                            }
+                        },
+                        onDelete = { vm.deleteRecurring(item.id) }
+                    )
                 }
                 item {
                     Text(
-                        "每月到达指定日期后，打开应用即自动记一笔（备注带 🔁 标记）。支出占预算，收入只增加账户余额。",
+                        "每月到达指定日期后，打开应用即自动记一笔（备注带 🔁 标记）。支出占预算，收入只增加账户余额；" +
+                            "留空日期的规则不自动记账，到账后点「记一笔」按当天补记。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp)
@@ -123,9 +150,13 @@ fun RecurringScreen(vm: AppViewModel, onDone: () -> Unit) {
 private fun RecurringItem(
     item: com.ibis.expense.data.RecurringExpense,
     emoji: Map<String, String>,
+    recorded: Boolean,
+    recording: Boolean,
     onEdit: () -> Unit,
+    onRecord: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val dated = item.dayOfMonth in 1..28
     Card(
         Modifier.fillMaxWidth().clickable(onClick = onEdit),
         shape = RoundedCornerShape(16.dp),
@@ -139,7 +170,8 @@ private fun RecurringItem(
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    "${TransactionType.label(item.type)} · ${categoryEmoji(item.category, emoji)} ${item.category} · 每月 ${item.dayOfMonth} 号",
+                    "${TransactionType.label(item.type)} · ${categoryEmoji(item.category, emoji)} ${item.category} · " +
+                        if (dated) "每月 ${item.dayOfMonth} 号" else "日期不限 · 到账后点「记一笔」",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -156,7 +188,20 @@ private fun RecurringItem(
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Bold
                 )
-                TextButton(onClick = onDelete) { Text("删除") }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (recorded) {
+                        Text(
+                            "本月已记",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else if (!dated) {
+                        TextButton(onClick = onRecord, enabled = !recording) {
+                            Text(if (recording) "记账中…" else "记一笔")
+                        }
+                    }
+                    TextButton(onClick = onDelete) { Text("删除") }
+                }
             }
         }
     }
@@ -171,7 +216,7 @@ private fun AddRecurringDialog(
     onDismiss: () -> Unit
 ) {
     var amount by remember { mutableStateOf(initial?.amountCents?.let(::centsToInput) ?: "") }
-    var day by remember { mutableStateOf(initial?.dayOfMonth?.toString() ?: "") }
+    var day by remember { mutableStateOf(initial?.dayOfMonth?.takeIf { it in 1..28 }?.toString() ?: "") }
     var category by remember { mutableStateOf(initial?.category ?: categories.firstOrNull()?.name ?: "其他") }
     var note by remember { mutableStateOf(initial?.note ?: "") }
     var method by remember { mutableStateOf(initial?.paymentMethod ?: PaymentMethod.WECHAT) }
@@ -180,7 +225,8 @@ private fun AddRecurringDialog(
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val cents = parseAmountToCents(amount)
-    val dayNum = day.toIntOrNull()?.takeIf { it in 1..28 }
+    val dayNum = if (day.isBlank()) 0 else day.toIntOrNull()?.takeIf { it in 1..28 }
+    val canSave = cents != null && dayNum != null && note.isNotBlank() && !busy
     val income = type == TransactionType.INCOME
 
     AlertDialog(
@@ -209,8 +255,10 @@ private fun AddRecurringDialog(
                 OutlinedTextField(
                     value = day,
                     onValueChange = { day = it.filter(Char::isDigit).take(2) },
-                    label = { Text("每月几号（1-28）") },
+                    label = { Text("每月几号（1-28，可留空）") },
                     enabled = !busy,
+                    isError = day.isNotBlank() && dayNum == null,
+                    supportingText = { Text(if (day.isNotBlank() && dayNum == null) "请输入 1-28，或留空" else "留空＝不自动记账，到账后点「记一笔」") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true
                 )
@@ -257,17 +305,17 @@ private fun AddRecurringDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    if (cents != null && dayNum != null && note.isNotBlank() && !busy) {
+                    if (canSave) {
                         busy = true
                         scope.launch {
                             try {
-                                onConfirm(cents, dayNum, category, note, method, type).onSuccess { onDismiss() }
+                                onConfirm(cents!!, dayNum!!, category, note, method, type).onSuccess { onDismiss() }
                                     .onFailure { error = it.message ?: "请重试" }
                             } finally { busy = false }
                         }
                     }
                 },
-                enabled = cents != null && dayNum != null && note.isNotBlank() && !busy
+                enabled = canSave
             ) { Text(if (busy) "保存中…" else "保存") }
         },
         dismissButton = {

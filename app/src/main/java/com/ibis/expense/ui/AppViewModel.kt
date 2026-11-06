@@ -186,6 +186,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val recurringState: StateFlow<List<RecurringExpense>> = dao.observeRecurring()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** 本月已经记过的周期规则（按未删除实例的日期判断，删掉本月这笔后可再次补记）。 */
+    val recurringRecordedThisMonth: StateFlow<Set<Long>> = combine(
+        dao.observeRecurring(), dao.observeAll()
+    ) { rules, records ->
+        if (rules.isEmpty()) emptySet()
+        else {
+            val month = YearMonth.now()
+            records.asSequence()
+                .filter { it.recurringId > 0 && YearMonth.from(LocalDate.ofEpochDay(it.epochDay)) == month }
+                .map { it.recurringId }
+                .toSet()
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
     val categoriesState: StateFlow<List<Category>> = dao.observeCategories()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -230,6 +244,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val today = LocalDate.now()
         val month = YearMonth.from(today)
         for (r in dao.getAllRecurringOnce()) {
+            if (r.dayOfMonth < 1) continue
             if (r.dayOfMonth > today.dayOfMonth) continue
             if (r.lastGeneratedMonth == month.toString()) continue
             if (recurringGeneratedInMonth(r.id, month)) {
@@ -237,21 +252,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 continue
             }
             val day = r.dayOfMonth.coerceIn(1, month.lengthOfMonth())
-            val type = if (r.type == TransactionType.INCOME) TransactionType.INCOME else TransactionType.EXPENSE
-            dao.insert(
-                ExpenseRecord(
-                    amountCents = r.amountCents,
-                    epochDay = LocalDate.of(today.year, today.monthValue, day).toEpochDay(),
-                    createdAt = System.currentTimeMillis(),
-                    category = if (type == TransactionType.INCOME) "收入" else r.category,
-                    note = "🔁 ${r.note}".trim(),
-                    recurringId = r.id,
-                    paymentMethod = r.paymentMethod,
-                    type = type
-                )
-            )
+            dao.insert(recurringInstance(r, LocalDate.of(today.year, today.monthValue, day)))
             dao.updateRecurring(r.copy(lastGeneratedMonth = month.toString()))
         }
+    }
+
+    private fun recurringInstance(rule: RecurringExpense, day: LocalDate): ExpenseRecord {
+        val type = if (rule.type == TransactionType.INCOME) TransactionType.INCOME else TransactionType.EXPENSE
+        return ExpenseRecord(
+            amountCents = rule.amountCents,
+            epochDay = day.toEpochDay(),
+            createdAt = System.currentTimeMillis(),
+            category = if (type == TransactionType.INCOME) "收入" else rule.category,
+            note = "🔁 ${rule.note}".trim(),
+            recurringId = rule.id,
+            paymentMethod = rule.paymentMethod,
+            type = type
+        )
+    }
+
+    /** 未指定日期的规则到账后手动补记：按今天记一笔，同一自然月只记一次。 */
+    suspend fun recordRecurringNow(id: Long): Result<Long> = withContext(Dispatchers.IO) {
+        try {
+            val savedId = db.withTransaction {
+                val rule = dao.getAllRecurringOnce().singleOrNull { it.id == id } ?: error("周期规则已删除")
+                val today = LocalDate.now()
+                val month = YearMonth.from(today)
+                val existing = dao.getAllStoredOnce().firstOrNull { record ->
+                    record.recurringId == id && record.deletedAt == 0L &&
+                        YearMonth.from(LocalDate.ofEpochDay(record.epochDay)) == month
+                }
+                if (existing != null) {
+                    existing.id
+                } else {
+                    val newId = dao.insert(recurringInstance(rule, today))
+                    dao.updateRecurring(rule.copy(lastGeneratedMonth = month.toString()))
+                    newId
+                }
+            }
+            Result.success(savedId)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Result.failure(e) }
     }
 
     private suspend fun recurringGeneratedInMonth(id: Long, month: YearMonth): Boolean {
@@ -264,7 +305,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun saveRecurring(initial: RecurringExpense?, amountCents: Long, dayOfMonth: Int, category: String, note: String, paymentMethod: String,
         type: String = TransactionType.EXPENSE): Result<Long> = withContext(Dispatchers.IO) {
         try {
-            require(amountCents > 0 && dayOfMonth in 1..28 && paymentMethod in PaymentMethod.ALL_WITH_LEGACY &&
+            require(amountCents > 0 && dayOfMonth in 0..28 && paymentMethod in PaymentMethod.ALL_WITH_LEGACY &&
                 type in listOf(TransactionType.EXPENSE, TransactionType.INCOME)) { "请检查金额、日期和支付方式" }
             val id = db.withTransaction {
                 val current = initial?.let { item -> dao.getAllRecurringOnce().singleOrNull { it.id == item.id } ?: error("周期规则已删除") }

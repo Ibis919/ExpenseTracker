@@ -245,7 +245,7 @@ object BackupManager {
             require(it.name.isNotBlank() && it.emoji.isNotBlank()) { "分类名称或图标不能为空" }
         }
         snapshot.recurring.forEach {
-            require(it.id > 0 && it.amountCents in 1..MAX_AMOUNT_CENTS && it.dayOfMonth in 1..31) { "周期账单 ID、金额或日期无效" }
+            require(it.id > 0 && it.amountCents in 1..MAX_AMOUNT_CENTS && it.dayOfMonth in 0..31) { "周期账单 ID、金额或日期无效" }
             require(it.category.isNotBlank()) { "周期账单分类不能为空" }
             require(it.paymentMethod.isEmpty() || it.paymentMethod in methods) { "周期账单支付账户无效" }
             require(it.type in listOf(TransactionType.EXPENSE, TransactionType.INCOME)) { "周期账单类型无效" }

@@ -383,6 +383,18 @@ class BackupManagerTest {
     }
 
     @Test
+    fun schemaEightRoundTripsRecurringRulesWithoutADay() {
+        val expected = snapshot().let { it.copy(recurring = it.recurring.map { rule -> rule.copy(dayOfMonth = 0) }) }
+
+        val encoded = BackupManager.encode(expected)
+        val decoded = BackupManager.decode(encoded)
+
+        assertEquals(expected, decoded)
+        assertEquals(0, decoded.recurring.single().dayOfMonth)
+        assertEquals(0, JSONObject(encoded).getJSONArray("recurring").getJSONObject(0).getInt("dayOfMonth"))
+    }
+
+    @Test
     fun schemaSevenBackupsWithoutRecurringTypeDecodeAsExpenseButSchemaEightRequiresIt() {
         val expected = snapshot()
         val encoded = BackupManager.encode(expected)

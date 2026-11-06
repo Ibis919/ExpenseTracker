@@ -733,6 +733,129 @@ class AppViewModelTest {
         Unit
     }
 
+    @Test
+    fun blankDayRecurringRuleNeverAutoGenerates() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.WECHAT, 10_000)
+        vm.saveRecurring(null, 1_200, 0, "收入", "工资", PaymentMethod.WECHAT, TransactionType.INCOME).getOrThrow()
+
+        vm.syncRecurringForCurrentMonth()
+        vm.syncRecurringForCurrentMonth()
+
+        assertTrue("留空日期的规则不能被当成 1 号自动生成", db.dao().getAllOnce().isEmpty())
+        val rule = db.dao().getAllRecurringOnce().single()
+        assertEquals(0, rule.dayOfMonth)
+        assertEquals("未生成过就应保留空的上次生成月份", "", rule.lastGeneratedMonth)
+        val balances = withTimeout(5_000) { vm.accountBalances.first { it.containsKey(PaymentMethod.WECHAT) } }
+        assertEquals("没有流水就不应影响账户余额", 10_000L, balances[PaymentMethod.WECHAT])
+        Unit
+    }
+
+    @Test
+    fun recordRecurringNowRecordsTodayAndStaysIdempotentForTheMonth() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.WECHAT, 10_000)
+        val id = vm.saveRecurring(null, 1_200, 0, "收入", "工资", PaymentMethod.WECHAT, TransactionType.INCOME).getOrThrow()
+        assertTrue("留空规则创建时不应自动生成流水", db.dao().getAllOnce().isEmpty())
+
+        val recordId = vm.recordRecurringNow(id).getOrThrow()
+
+        val record = db.dao().getAllOnce().single()
+        assertEquals(recordId, record.id)
+        assertEquals(id, record.recurringId)
+        assertEquals(day, record.epochDay)
+        assertEquals(TransactionType.INCOME, record.type)
+        assertEquals("收入", record.category)
+        assertEquals("🔁 工资", record.note)
+        assertEquals(PaymentMethod.WECHAT, record.paymentMethod)
+        assertEquals(1_200L, record.amountCents)
+        assertEquals(YearMonth.now().toString(), db.dao().getAllRecurringOnce().single().lastGeneratedMonth)
+        val balances = withTimeout(5_000) { vm.accountBalances.first { it[PaymentMethod.WECHAT] == 11_200L } }
+        assertEquals("收入规则补记应增加账户余额", 11_200L, balances[PaymentMethod.WECHAT])
+        val home = withTimeout(5_000) {
+            vm.homeState.first { it?.days?.flatMap { d -> d.records }?.any { r -> r.id == record.id } == true }!!
+        }
+        assertEquals("补记的收入不能计入消费", 0L, home.spentCents)
+
+        assertEquals("同月再次补记应返回同一笔", recordId, vm.recordRecurringNow(id).getOrThrow())
+        assertEquals(1, db.dao().getAllOnce().size)
+        vm.syncRecurringForCurrentMonth()
+        assertEquals("补记后自动同步不能再生成第二笔", 1, db.dao().getAllOnce().size)
+        Unit
+    }
+
+    @Test
+    fun recordRecurringNowAppliesExpenseRulesAndRejectsUnknownRules() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.ALIPAY, 5_000)
+        val id = vm.saveRecurring(null, 900, 0, "娱乐", "会员", PaymentMethod.ALIPAY).getOrThrow()
+        assertTrue(db.dao().getAllOnce().isEmpty())
+
+        vm.recordRecurringNow(id).getOrThrow()
+
+        val record = db.dao().getAllOnce().single()
+        assertEquals(id, record.recurringId)
+        assertEquals(day, record.epochDay)
+        assertEquals(TransactionType.EXPENSE, record.type)
+        assertEquals("娱乐", record.category)
+        assertEquals("🔁 会员", record.note)
+        assertEquals(PaymentMethod.ALIPAY, record.paymentMethod)
+        assertEquals(900L, record.amountCents)
+        val balances = withTimeout(5_000) { vm.accountBalances.first { it[PaymentMethod.ALIPAY] == 4_100L } }
+        assertEquals("支出规则补记应扣减账户余额", 4_100L, balances[PaymentMethod.ALIPAY])
+        assertEquals(900L, withTimeout(5_000) { vm.homeState.first { it?.spentCents == 900L }!! }.spentCents)
+
+        assertTrue("不存在的规则应返回失败", vm.recordRecurringNow(id + 999).isFailure)
+        assertEquals(1, db.dao().getAllOnce().size)
+        Unit
+    }
+
+    @Test
+    fun recurringRecordedThisMonthTracksManualRecordingAndDeletion() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.ALIPAY, 5_000)
+        val datedId = vm.saveRecurring(null, 1_200, 1, "娱乐", "会员", PaymentMethod.ALIPAY).getOrThrow()
+        val blankId = vm.saveRecurring(null, 800, 0, "交通", "地铁", PaymentMethod.ALIPAY).getOrThrow()
+
+        val before = withTimeout(5_000) { vm.recurringRecordedThisMonth.first { it.contains(datedId) } }
+        assertTrue("有日期的规则本月应已记录", datedId in before)
+        assertTrue("留空规则补记前不应算作本月已记", blankId !in before)
+
+        val recordedId = vm.recordRecurringNow(blankId).getOrThrow()
+        val after = withTimeout(5_000) { vm.recurringRecordedThisMonth.first { it.contains(blankId) } }
+        assertTrue(after.contains(datedId))
+        assertEquals(2, db.dao().getAllOnce().size)
+
+        vm.deleteRecord(recordedId)
+        withTimeout(5_000) {
+            while (db.dao().getAllStoredOnce().none { it.id == recordedId && it.deletedAt > 0L }) delay(10)
+        }
+        withTimeout(5_000) { vm.recurringRecordedThisMonth.first { blankId !in it } }
+
+        val againId = vm.recordRecurringNow(blankId).getOrThrow()
+        assertTrue("删除本月这一笔后应能再次补记", againId != recordedId)
+        withTimeout(5_000) { vm.recurringRecordedThisMonth.first { blankId in it } }
+        assertEquals(2, db.dao().getAllOnce().size)
+        Unit
+    }
+
+    @Test
+    fun fillingInABlankRecurringDayGeneratesOnTheNextSync() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.ALIPAY, 5_000)
+        val id = vm.saveRecurring(null, 1_200, 0, "娱乐", "会员", PaymentMethod.ALIPAY).getOrThrow()
+        vm.syncRecurringForCurrentMonth()
+        assertTrue("补填日期前不应生成流水", db.dao().getAllOnce().isEmpty())
+
+        val rule = db.dao().getAllRecurringOnce().single()
+        vm.saveRecurring(rule, 1_200, 1, "娱乐", "会员", PaymentMethod.ALIPAY).getOrThrow()
+        vm.syncRecurringForCurrentMonth()
+
+        val generated = db.dao().getAllOnce().single { it.recurringId == id }
+        assertEquals(TransactionType.EXPENSE, generated.type)
+        assertEquals("娱乐", generated.category)
+        assertEquals("🔁 会员", generated.note)
+        assertEquals(1, db.dao().countRecurringInstance(id, day - 31, day))
+        val balances = withTimeout(5_000) { vm.accountBalances.first { it[PaymentMethod.ALIPAY] == 3_800L } }
+        assertEquals("补填日期后应按正常规则扣减账户余额", 3_800L, balances[PaymentMethod.ALIPAY])
+        Unit
+    }
+
     private fun record() = ExpenseRecord(
         amountCents = 1234,
         epochDay = day,
