@@ -108,6 +108,10 @@ class UiLayoutTest {
         paymentSpendingBreakdownFitsInDarkTheme()
         closeActivity()
         paymentSpendingBreakdownFitsAtDoubleFontScale()
+        closeActivity()
+        recurringDialogSwitchesBetweenExpenseAndIncome()
+        closeActivity()
+        recurringDialogFitsDarkModeAndDoubleFontScale()
     }
 
     private fun categoryDragScrollsToOffscreenItems() {
@@ -606,6 +610,66 @@ class UiLayoutTest {
     private fun paymentSpendingEpochDays(): Pair<Long, Long> =
         YearMonth.now().atDay(1).toEpochDay() to YearMonth.now().atDay(2).toEpochDay()
 
+    private fun recurringDialogSwitchesBetweenExpenseAndIncome() {
+        openApp()
+        openRecurringDialog()
+        assertTrue("周期记账弹层应同时提供支出和收入两个可点击选项",
+            clickNode("✓ 支出", dialogDecor()) != null && clickNode("收入", dialogDecor()) != null)
+        assertTrue("弹层应默认选中支出",
+            clickNode("✓ 支出", dialogDecor())!!.config[SemanticsProperties.Selected] == true)
+        assertTrue("默认状态下收入不应被选中",
+            clickNode("收入", dialogDecor())!!.config[SemanticsProperties.Selected] == false)
+        assertTrue("支出状态应展示可选分类",
+            nodes(root = dialogDecor()).any {
+                "🍜 餐饮" in it.text() && it.config.getOrNull(SemanticsActions.OnClick) != null
+            })
+        assertTrue("支出状态应提示支付账户", textNode("支付账户", dialogDecor()) != null)
+        screenshot("recurring-dialog-expense", dialogDecor())
+
+        assertTrue("收入选项应可点击",
+            clickNode("收入", dialogDecor())!!.config[SemanticsActions.OnClick].action!!.invoke())
+        awaitDialog("切到收入后应选中收入、隐藏分类并显示收入说明") {
+            clickNode("✓ 收入", dialogDecor()) != null && clickNode("支出", dialogDecor()) != null &&
+                nodes(root = dialogDecor()).none { "🍜 餐饮" in it.text() } &&
+                textNode("收入记入「收入」分类，只增加账户余额，不占消费预算。", dialogDecor()) != null
+        }
+        assertTrue("切换后应选中收入",
+            clickNode("✓ 收入", dialogDecor())!!.config[SemanticsProperties.Selected] == true)
+        assertTrue("收入的账户栏应改为收款账户",
+            textNode("收款账户", dialogDecor()) != null && textNode("支付账户", dialogDecor()) == null)
+        screenshot("recurring-dialog-income", dialogDecor())
+    }
+
+    private fun recurringDialogFitsDarkModeAndDoubleFontScale() {
+        openApp(darkTheme = true, scale = 2f)
+        openRecurringDialog()
+        assertControlLayout("✓ 支出", dialogDecor())
+        assertControlLayout("收入", dialogDecor())
+        assertControlLayout("✓ 微信", dialogDecor())
+        screenshot("recurring-dialog-expense-dark-font-200", dialogDecor())
+        assertTrue("200% 字号下收入选项仍应可点击",
+            clickNode("收入", dialogDecor())!!.config[SemanticsActions.OnClick].action!!.invoke())
+        awaitDialog("200% 字号下应切到收入并隐藏分类") {
+            clickNode("✓ 收入", dialogDecor()) != null &&
+                nodes(root = dialogDecor()).none { "🍜 餐饮" in it.text() } &&
+                textNode("收入记入「收入」分类，只增加账户余额，不占消费预算。", dialogDecor()) != null
+        }
+        assertControlLayout("✓ 收入", dialogDecor())
+        assertControlLayout("保存", dialogDecor())
+        screenshot("recurring-dialog-income-dark-font-200", dialogDecor())
+    }
+
+    private fun openRecurringDialog() {
+        assertTrue(clickNode("账本")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("账本页应提供设置入口") { clickNodeByDescription("设置") != null }
+        assertTrue(clickNodeByDescription("设置")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("设置页应提供周期记账入口") { clickNode("🔁 周期记账") != null }
+        assertTrue(clickNode("🔁 周期记账")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("周期记账页应提供添加入口") { clickNode("添加") != null }
+        assertTrue(clickNode("添加")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        awaitDialog("周期记账弹层应打开") { textNode("添加周期记账", dialogDecor()) != null }
+    }
+
     private fun showPaymentSpendingLedger() {
         await("测试账本记录应写入数据库") { vm.allRecords.value.size == 4 }
         vm.acknowledgeSavedRecord()
@@ -836,6 +900,11 @@ class UiLayoutTest {
     private fun clickNode(label: String, root: View = decor): SemanticsNode? = nodes(root = root).firstOrNull {
         it.config.getOrNull(SemanticsActions.OnClick)?.action != null &&
             it.config.getOrNull(SemanticsProperties.Text).orEmpty().any { text -> text.text == label }
+    }
+
+    private fun clickNodeByDescription(description: String, root: View = decor): SemanticsNode? = nodes(root = root).firstOrNull {
+        it.config.getOrNull(SemanticsActions.OnClick)?.action != null &&
+            it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty().any { text -> text == description }
     }
 
     private fun textNode(label: String, root: View = decor): SemanticsNode? = nodes(root = root).firstOrNull {

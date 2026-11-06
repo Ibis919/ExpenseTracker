@@ -413,7 +413,7 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Text("🔁 周期性支出")
+                Text("🔁 周期记账")
             }
             Spacer(Modifier.height(8.dp))
             OutlinedButton(

@@ -125,7 +125,7 @@ fun CategoryManageScreen(vm: AppViewModel, onDone: () -> Unit) {
             }
             item {
                 Text(
-                    "分类在记账、统计、周期支出中通用。删除分类时，其下记录会归入「其他」，不会丢失。",
+                    "分类在记账、统计、周期记账中通用。删除分类时，其下记录会归入「其他」，不会丢失。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp)
@@ -162,7 +162,7 @@ fun CategoryManageScreen(vm: AppViewModel, onDone: () -> Unit) {
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("删除分类") },
-            text = { Text("「${target.name}」下的记录、周期支出和模板将归入「其他」，记录本身不会删除。") },
+            text = { Text("「${target.name}」下的记录、周期记账和模板将归入「其他」，记录本身不会删除。") },
             confirmButton = {
                 TextButton(onClick = {
                     vm.deleteCategory(target.name)

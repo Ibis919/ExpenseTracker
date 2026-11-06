@@ -1,5 +1,5 @@
 {
-  "version": "0.11.4",
-  "notes": "分类管理新增排序：长按右侧图标拖动，或点按图标上下移动；保存后记账页面同步使用新顺序。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.11.4/apk/latest.apk"
+  "version": "0.12.0",
+  "notes": "周期记账改为双向：可设置每月入账的收入规则，到日自动记一笔收入并加到所选账户余额，不占预算与统计。旧流水补选微信/支付宝不再重复扣余额；微信与支付宝互改仍照旧影响两边余额。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.12.0/apk/latest.apk"
 }

@@ -6,12 +6,15 @@ import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import androidx.room.Room
 import androidx.lifecycle.ViewModelStore
+import com.ibis.expense.data.AccountBalance
 import com.ibis.expense.data.BackupManager
 import com.ibis.expense.data.ExpenseDatabase
 import com.ibis.expense.data.ExpenseRecord
 import com.ibis.expense.data.MIGRATION_4_5
 import com.ibis.expense.data.MIGRATION_5_6
 import com.ibis.expense.data.MIGRATION_6_7
+import com.ibis.expense.data.MIGRATION_7_8
+import com.ibis.expense.data.RecurringExpense
 import com.ibis.expense.data.TransactionType
 import java.io.File
 import java.time.LocalDate
@@ -334,7 +337,7 @@ class AppViewModelTest {
             old.version = 4
         }
         val migrated = Room.databaseBuilder(app, ExpenseDatabase::class.java, name)
-            .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build()
+            .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build()
         try {
             val record = migrated.dao().getAllOnce().single { it.id == 1L }
             assertEquals("旧账", record.note)
@@ -345,6 +348,7 @@ class AppViewModelTest {
             assertTrue(migrated.dao().observeAccountBalances().first().isEmpty())
             assertEquals("", migrated.dao().getAllRecurringOnce().single().paymentMethod)
             assertEquals(YearMonth.now().toString(), migrated.dao().getAllRecurringOnce().single().lastGeneratedMonth)
+            assertEquals(TransactionType.EXPENSE, migrated.dao().getAllRecurringOnce().single().type)
             assertEquals("", migrated.dao().getAllTemplatesOnce().single().paymentMethod)
         } finally {
             migrated.close()
@@ -625,12 +629,131 @@ class AppViewModelTest {
         assertEquals(5000L, db.dao().getAllOnce().single().amountCents)
     }
 
+    @Test
+    fun recurringIncomeRuleGeneratesOneIncomeCreditingItsAccountWithoutSpending() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.WECHAT, 10_000)
+
+        val id = vm.saveRecurring(null, 1_200, 1, "收入", "工资", PaymentMethod.WECHAT, TransactionType.INCOME).getOrThrow()
+
+        val generated = db.dao().getAllOnce().single { it.recurringId == id }
+        assertEquals(TransactionType.INCOME, generated.type)
+        assertEquals("收入", generated.category)
+        assertEquals("🔁 工资", generated.note)
+        assertEquals(PaymentMethod.WECHAT, generated.paymentMethod)
+        assertEquals(1_200L, generated.amountCents)
+        assertEquals(TransactionType.INCOME, db.dao().getAllRecurringOnce().single().type)
+
+        val balances = withTimeout(5_000) { vm.accountBalances.first { it[PaymentMethod.WECHAT] == 11_200L } }
+        assertEquals(11_200L, balances[PaymentMethod.WECHAT])
+
+        vm.syncRecurringForCurrentMonth()
+        vm.syncRecurringForCurrentMonth()
+        assertEquals(1, db.dao().getAllOnce().size)
+        assertEquals(1, db.dao().countRecurringInstance(id, day - 31, day))
+        val home = withTimeout(5_000) {
+            vm.homeState.first { it?.days?.flatMap { d -> d.records }?.any { r -> r.id == generated.id } == true }!!
+        }
+        assertEquals(0L, home.spentCents)
+        assertEquals(0L, home.days.single().dayTotalCents)
+        Unit
+    }
+
+    @Test
+    fun legacyRecurringRuleWithoutTypeStillGeneratesAnExpense() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.ALIPAY, 5_000)
+        val id = db.dao().insertRecurring(
+            RecurringExpense(amountCents = 1_200, dayOfMonth = 1, category = "娱乐", note = "会员", paymentMethod = PaymentMethod.ALIPAY)
+        )
+        assertEquals(TransactionType.EXPENSE, db.dao().getAllRecurringOnce().single().type)
+
+        vm.syncRecurringForCurrentMonth()
+
+        val generated = db.dao().getAllOnce().single { it.recurringId == id }
+        assertEquals(TransactionType.EXPENSE, generated.type)
+        assertEquals("娱乐", generated.category)
+        assertEquals("🔁 会员", generated.note)
+        assertEquals(PaymentMethod.ALIPAY, generated.paymentMethod)
+        assertEquals(1, db.dao().countRecurringInstance(id, day - 31, day))
+        withTimeout(5_000) { vm.accountBalances.first { it[PaymentMethod.ALIPAY] == 3_800L } }
+        Unit
+    }
+
+    @Test
+    fun linkingALegacyUnassignedRecordKeepsBalancesThenNormalAccountSwitchApplies() = runBlocking {
+        val id = db.dao().insert(record())
+        vm.setAccountBalance(PaymentMethod.WECHAT, 50_000)
+        vm.setAccountBalance(PaymentMethod.ALIPAY, 20_000)
+        val displayed = uiRecord(db.dao().getAllOnce().single { it.id == id })
+        assertEquals("", displayed.paymentMethod)
+
+        vm.updateRecord(displayed, 1_234, day, "餐饮", "原始记录", paymentMethod = PaymentMethod.WECHAT).getOrThrow()
+
+        assertEquals(PaymentMethod.WECHAT, db.dao().getAllOnce().single { it.id == id }.paymentMethod)
+        withTimeout(5_000) {
+            vm.accountBalances.first { it[PaymentMethod.WECHAT] == 50_000L && it[PaymentMethod.ALIPAY] == 20_000L }
+        }
+
+        vm.updateRecord(displayed, 1_234, day, "餐饮", "原始记录", paymentMethod = PaymentMethod.ALIPAY).getOrThrow()
+
+        assertEquals(PaymentMethod.ALIPAY, db.dao().getAllOnce().single { it.id == id }.paymentMethod)
+        withTimeout(5_000) {
+            vm.accountBalances.first { it[PaymentMethod.WECHAT] == 51_234L && it[PaymentMethod.ALIPAY] == 18_766L }
+        }
+        Unit
+    }
+
+    @Test
+    fun linkingARecordToAnAccountWithoutABalanceRowDoesNotCreateOne() = runBlocking {
+        val id = db.dao().insert(record())
+        vm.setAccountBalance(PaymentMethod.ALIPAY, 30_000)
+        val displayed = uiRecord(db.dao().getAllOnce().single { it.id == id })
+
+        vm.updateRecord(displayed, 1_234, day, "餐饮", "原始记录", paymentMethod = PaymentMethod.WECHAT).getOrThrow()
+
+        assertEquals(PaymentMethod.WECHAT, db.dao().getAllOnce().single { it.id == id }.paymentMethod)
+        assertEquals(listOf(AccountBalance(PaymentMethod.ALIPAY, 30_000)), db.dao().getAccountBalancesOnce())
+        Unit
+    }
+
+    @Test
+    fun relinkingAnExpenseThatAlreadyHasARefundIsStillRejected() = runBlocking {
+        vm.setAccountBalance(PaymentMethod.WECHAT, 5_000)
+        val expenseId = vm.addRecord(1_000, day, "购物", "未关联支出", paymentMethod = "").getOrThrow()
+        vm.addRecord(200, day, "购物", "退款", type = TransactionType.REFUND, relatedRecordId = expenseId).getOrThrow()
+        val expense = withTimeout(5_000) {
+            vm.homeState.first { it?.days?.flatMap { d -> d.records }?.size == 2 }!!
+        }.days.flatMap { it.records }.single { it.id == expenseId }
+
+        val failure = vm.updateRecord(expense, 1_000, day, "购物", "未关联支出", paymentMethod = PaymentMethod.WECHAT)
+
+        assertTrue(failure.isFailure)
+        assertTrue(failure.exceptionOrNull()!!.message!!.contains("已有退款"))
+        assertEquals("", db.dao().getAllOnce().single { it.id == expenseId }.paymentMethod)
+        assertEquals("", db.dao().getAllOnce().single { it.type == TransactionType.REFUND }.paymentMethod)
+        Unit
+    }
+
     private fun record() = ExpenseRecord(
         amountCents = 1234,
         epochDay = day,
         createdAt = 1_000,
         category = "餐饮",
         note = "原始记录"
+    )
+
+    private fun uiRecord(record: ExpenseRecord) = UiRecord(
+        id = record.id,
+        amountCents = record.amountCents,
+        epochDay = record.epochDay,
+        createdAt = record.createdAt,
+        category = record.category,
+        note = record.note,
+        overBudget = false,
+        excluded = record.excluded,
+        paymentMethod = record.paymentMethod,
+        type = record.type,
+        transferTo = record.transferTo,
+        relatedRecordId = record.relatedRecordId
     )
 
     private fun csvFile(text: String): Uri {

@@ -237,15 +237,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 continue
             }
             val day = r.dayOfMonth.coerceIn(1, month.lengthOfMonth())
+            val type = if (r.type == TransactionType.INCOME) TransactionType.INCOME else TransactionType.EXPENSE
             dao.insert(
                 ExpenseRecord(
                     amountCents = r.amountCents,
                     epochDay = LocalDate.of(today.year, today.monthValue, day).toEpochDay(),
                     createdAt = System.currentTimeMillis(),
-                    category = r.category,
+                    category = if (type == TransactionType.INCOME) "收入" else r.category,
                     note = "🔁 ${r.note}".trim(),
                     recurringId = r.id,
-                    paymentMethod = r.paymentMethod
+                    paymentMethod = r.paymentMethod,
+                    type = type
                 )
             )
             dao.updateRecurring(r.copy(lastGeneratedMonth = month.toString()))
@@ -259,12 +261,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()) > 0
     }
 
-    suspend fun saveRecurring(initial: RecurringExpense?, amountCents: Long, dayOfMonth: Int, category: String, note: String, paymentMethod: String): Result<Long> = withContext(Dispatchers.IO) {
+    suspend fun saveRecurring(initial: RecurringExpense?, amountCents: Long, dayOfMonth: Int, category: String, note: String, paymentMethod: String,
+        type: String = TransactionType.EXPENSE): Result<Long> = withContext(Dispatchers.IO) {
         try {
-            require(amountCents > 0 && dayOfMonth in 1..28 && paymentMethod in PaymentMethod.ALL_WITH_LEGACY) { "请检查金额、日期和支付方式" }
+            require(amountCents > 0 && dayOfMonth in 1..28 && paymentMethod in PaymentMethod.ALL_WITH_LEGACY &&
+                type in listOf(TransactionType.EXPENSE, TransactionType.INCOME)) { "请检查金额、日期和支付方式" }
             val id = db.withTransaction {
                 val current = initial?.let { item -> dao.getAllRecurringOnce().singleOrNull { it.id == item.id } ?: error("周期规则已删除") }
-                val item = RecurringExpense(current?.id ?: 0, amountCents, dayOfMonth, category, note.trim(), paymentMethod, current?.lastGeneratedMonth ?: "")
+                val item = RecurringExpense(current?.id ?: 0, amountCents, dayOfMonth,
+                    if (type == TransactionType.INCOME) "收入" else category, note.trim(), paymentMethod,
+                    current?.lastGeneratedMonth ?: "", type)
                 val savedId = if (initial == null) dao.insertRecurring(item) else {
                     dao.updateRecurring(item)
                     item.id
@@ -389,6 +395,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         category = category, note = note.trim(), excluded = excluded, paymentMethod = paymentMethod, transferTo = transferTo), records)
                     validateTransactions(records.filterNot { it.id == record.id } + candidate)
                     check(dao.updateRecordEntity(candidate) == 1) { "记录不存在或已删除" }
+                    rebaseUnlinkedPayment(original.paymentMethod.isEmpty() != candidate.paymentMethod.isEmpty(),
+                        listOf(original), listOf(candidate))
                     candidate
                 }
                 Result.success(updated)
@@ -441,6 +449,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val parent = records.singleOrNull { it.id == record.relatedRecordId && it.deletedAt == 0L && it.type == TransactionType.EXPENSE }
             ?: error("请选择有效的原支出")
         return record.copy(category = parent.category, excluded = parent.excluded, paymentMethod = parent.paymentMethod)
+    }
+
+    /**
+     * 旧流水（升级前未关联账户，或 CSV 导入的未关联流水）补选支付账户时，余额不应再被扣一次：
+     * 把这次编辑造成的账户口径变化抵消回该账户的基准值。只在「未关联 ↔ 具体账户」之间切换时抵消，
+     * 微信 ↔ 支付宝 互改仍照常影响两边余额；从未设置过余额的账户不新建基准。
+     */
+    private suspend fun rebaseUnlinkedPayment(linkChanged: Boolean, before: List<ExpenseRecord>, after: List<ExpenseRecord>) {
+        if (!linkChanged) return
+        val bases = dao.getAccountBalancesOnce().associateBy { it.method }
+        for (method in listOf(PaymentMethod.WECHAT, PaymentMethod.ALIPAY)) {
+            val base = bases[method] ?: continue
+            val delta = after.sumOf { it.accountImpact(method) } - before.sumOf { it.accountImpact(method) }
+            if (delta != 0L) dao.upsertAccountBalance(base.copy(baseCents = base.baseCents - delta))
+        }
     }
 
     val allRecords = dao.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

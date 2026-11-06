@@ -32,7 +32,7 @@ object BackupManager {
     private const val KEY_BUDGET_CENTS = "budget_cents"
     private const val DEFAULT_BUDGET_CENTS = 60000L
     private const val FORMAT_VERSION = 1
-    private const val SCHEMA_VERSION = 7
+    private const val SCHEMA_VERSION = 8
     private const val MAX_AMOUNT_CENTS = 999999999L
     private const val KEEP = 7
     private val methods = setOf("微信", "支付宝")
@@ -98,6 +98,7 @@ object BackupManager {
                     put("note", item.note)
                     put("paymentMethod", item.paymentMethod)
                     put("lastGeneratedMonth", item.lastGeneratedMonth)
+                    put("type", item.type)
                 }) }
             })
             put("templates", JSONArray().apply {
@@ -152,7 +153,8 @@ object BackupManager {
                     RecurringExpense(item.long("id"), item.long("amountCents"), item.int("dayOfMonth"),
                         item.string("category"), item.string("note"),
                         if (schema >= 6) item.string("paymentMethod") else "",
-                        if (schema >= 7) item.string("lastGeneratedMonth") else "")
+                        if (schema >= 7) item.string("lastGeneratedMonth") else "",
+                        if (schema >= 8) item.string("type") else TransactionType.EXPENSE)
                 },
                 templates = root.objects("templates") { template ->
                     RecordTemplate(template.long("id"), template.long("amountCents"),
@@ -246,6 +248,7 @@ object BackupManager {
             require(it.id > 0 && it.amountCents in 1..MAX_AMOUNT_CENTS && it.dayOfMonth in 1..31) { "周期账单 ID、金额或日期无效" }
             require(it.category.isNotBlank()) { "周期账单分类不能为空" }
             require(it.paymentMethod.isEmpty() || it.paymentMethod in methods) { "周期账单支付账户无效" }
+            require(it.type in listOf(TransactionType.EXPENSE, TransactionType.INCOME)) { "周期账单类型无效" }
             require(it.lastGeneratedMonth.isEmpty() || runCatching { YearMonth.parse(it.lastGeneratedMonth) }.isSuccess) {
                 "周期账单已生成月份无效"
             }

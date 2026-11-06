@@ -49,7 +49,8 @@ data class RecurringExpense(
     val category: String,
     val note: String,
     val paymentMethod: String = "",
-    val lastGeneratedMonth: String = ""
+    val lastGeneratedMonth: String = "",
+    val type: String = TransactionType.EXPENSE
 )
 
 @Entity(tableName = "categories")
@@ -299,9 +300,15 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
     }
 }
 
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE recurring_expenses ADD COLUMN type TEXT NOT NULL DEFAULT 'expense'")
+    }
+}
+
 @Database(
     entities = [ExpenseRecord::class, RecurringExpense::class, Category::class, RecordTemplate::class, AccountBalance::class],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class ExpenseDatabase : RoomDatabase() {
@@ -310,7 +317,7 @@ abstract class ExpenseDatabase : RoomDatabase() {
     companion object {
         fun build(context: Context): ExpenseDatabase =
             Room.databaseBuilder(context, ExpenseDatabase::class.java, "expenses.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         db.execSQL(SEED_CATEGORIES)

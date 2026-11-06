@@ -50,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.ibis.expense.data.RecurringExpense
+import com.ibis.expense.data.TransactionType
 import kotlinx.coroutines.launch
 
 @Composable
@@ -63,7 +64,7 @@ fun RecurringScreen(vm: AppViewModel, onDone: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("周期性支出") },
+                title = { Text("周期记账") },
                 navigationIcon = {
                     IconButton(onClick = onDone) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -78,7 +79,7 @@ fun RecurringScreen(vm: AppViewModel, onDone: () -> Unit) {
         if (items.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 Text(
-                    "还没有周期性支出\n房租、会员等固定开销登记一次即可",
+                    "还没有周期记账\n房租、会员等固定开销，或每月工资，登记一次即可",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -95,7 +96,7 @@ fun RecurringScreen(vm: AppViewModel, onDone: () -> Unit) {
                 }
                 item {
                     Text(
-                        "每月到达指定日期后，打开应用即自动记一笔（备注带 🔁 标记）。",
+                        "每月到达指定日期后，打开应用即自动记一笔（备注带 🔁 标记）。支出占预算，收入只增加账户余额。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp)
@@ -110,8 +111,8 @@ fun RecurringScreen(vm: AppViewModel, onDone: () -> Unit) {
             initial = editing,
             categories = categories,
             emoji = emoji,
-            onConfirm = { cents, day, category, note, method ->
-                vm.saveRecurring(editing, cents, day, category, note, method)
+            onConfirm = { cents, day, category, note, method, type ->
+                vm.saveRecurring(editing, cents, day, category, note, method, type)
             },
             onDismiss = { showAdd = false; editing = null }
         )
@@ -138,7 +139,7 @@ private fun RecurringItem(
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    "${categoryEmoji(item.category, emoji)} ${item.category} · 每月 ${item.dayOfMonth} 号",
+                    "${TransactionType.label(item.type)} · ${categoryEmoji(item.category, emoji)} ${item.category} · 每月 ${item.dayOfMonth} 号",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -151,7 +152,7 @@ private fun RecurringItem(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    "¥${formatAmount(item.amountCents)}",
+                    if (item.type == TransactionType.INCOME) "＋¥${formatAmount(item.amountCents)}" else "¥${formatAmount(item.amountCents)}",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Bold
                 )
@@ -166,7 +167,7 @@ private fun AddRecurringDialog(
     initial: RecurringExpense?,
     categories: List<com.ibis.expense.data.Category>,
     emoji: Map<String, String>,
-    onConfirm: suspend (cents: Long, day: Int, category: String, note: String, method: String) -> Result<Long>,
+    onConfirm: suspend (cents: Long, day: Int, category: String, note: String, method: String, type: String) -> Result<Long>,
     onDismiss: () -> Unit
 ) {
     var amount by remember { mutableStateOf(initial?.amountCents?.let(::centsToInput) ?: "") }
@@ -174,18 +175,28 @@ private fun AddRecurringDialog(
     var category by remember { mutableStateOf(initial?.category ?: categories.firstOrNull()?.name ?: "其他") }
     var note by remember { mutableStateOf(initial?.note ?: "") }
     var method by remember { mutableStateOf(initial?.paymentMethod ?: PaymentMethod.WECHAT) }
+    var type by remember { mutableStateOf(initial?.type ?: TransactionType.EXPENSE) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val cents = parseAmountToCents(amount)
     val dayNum = day.toIntOrNull()?.takeIf { it in 1..28 }
+    val income = type == TransactionType.INCOME
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text(if (initial == null) "添加周期性支出" else "编辑周期性支出") },
+        title = { Text(if (initial == null) "添加周期记账" else "编辑周期记账") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 if (initial != null) Text("修改仅影响以后生成的记录，已有流水不变。", style = MaterialTheme.typography.bodySmall)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(TransactionType.EXPENSE, TransactionType.INCOME).forEach { value ->
+                        FilterChip(selected = type == value, onClick = { type = value }, enabled = !busy,
+                            label = { Text((if (type == value) "✓ " else "") + TransactionType.label(value)) },
+                            border = if (type == value) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = amount,
                     onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } },
@@ -204,7 +215,7 @@ private fun AddRecurringDialog(
                     singleLine = true
                 )
                 Spacer(Modifier.height(12.dp))
-                Text("支付账户", style = MaterialTheme.typography.titleSmall)
+                Text(if (income) "收款账户" else "支付账户", style = MaterialTheme.typography.titleSmall)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PaymentMethod.ALL_WITH_LEGACY.forEach { m ->
                         FilterChip(selected = method == m, onClick = { method = m }, enabled = !busy,
@@ -213,25 +224,30 @@ private fun AddRecurringDialog(
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    categories.forEach { c ->
-                        FilterChip(
-                            selected = category == c.name,
-                            onClick = { category = c.name },
-                            enabled = !busy,
-                            label = { Text("${if (category == c.name) "✓ " else ""}${categoryEmoji(c.name, emoji)} ${c.name}") },
-                            border = if (category == c.name) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null
-                        )
+                if (!income) {
+                    androidx.compose.foundation.layout.FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        categories.forEach { c ->
+                            FilterChip(
+                                selected = category == c.name,
+                                onClick = { category = c.name },
+                                enabled = !busy,
+                                label = { Text("${if (category == c.name) "✓ " else ""}${categoryEmoji(c.name, emoji)} ${c.name}") },
+                                border = if (category == c.name) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null
+                            )
+                        }
                     }
+                    Spacer(Modifier.height(12.dp))
+                } else {
+                    Text("收入记入「收入」分类，只增加账户余额，不占消费预算。", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(12.dp))
                 }
-                Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = note,
                     onValueChange = { note = it },
-                    label = { Text("备注（如：房租 / 视频会员）") },
+                    label = { Text(if (income) "备注（如：工资 / 房租收租）" else "备注（如：房租 / 视频会员）") },
                     enabled = !busy,
                     singleLine = true
                 )
@@ -245,7 +261,7 @@ private fun AddRecurringDialog(
                         busy = true
                         scope.launch {
                             try {
-                                onConfirm(cents, dayNum, category, note, method).onSuccess { onDismiss() }
+                                onConfirm(cents, dayNum, category, note, method, type).onSuccess { onDismiss() }
                                     .onFailure { error = it.message ?: "请重试" }
                             } finally { busy = false }
                         }

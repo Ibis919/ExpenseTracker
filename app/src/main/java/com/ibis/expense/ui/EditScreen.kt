@@ -223,7 +223,7 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
                         transferTo = if (method == PaymentMethod.WECHAT) PaymentMethod.ALIPAY else PaymentMethod.WECHAT
                     }
                 }
-                if (paymentMethod.isEmpty()) Text("未关联账户，选择后才影响余额。", style = MaterialTheme.typography.bodySmall)
+                if (paymentMethod.isEmpty()) Text("未关联账户：补选支付方式不会改变现有余额。", style = MaterialTheme.typography.bodySmall)
                 if (type == TransactionType.TRANSFER) {
                     Spacer(Modifier.height(12.dp))
                     Text("转入账户", style = MaterialTheme.typography.titleSmall)

@@ -362,6 +362,39 @@ class BackupManagerTest {
         assertEquals(LocalDate.of(2026, 10, 1), BackupManager.latestBackupDate(app))
     }
 
+    @Test
+    fun schemaEightRoundTripsIncomeRecurringRulesAndTheirAccount() = runBlocking {
+        val expected = snapshot().let { it.copy(recurring = it.recurring.map { rule ->
+            rule.copy(type = TransactionType.INCOME, category = "收入", note = "工资", paymentMethod = "微信")
+        }) }
+
+        val encoded = BackupManager.encode(expected)
+        val decoded = BackupManager.decode(encoded)
+
+        assertEquals(expected, decoded)
+        assertEquals(TransactionType.INCOME, decoded.recurring.single().type)
+        assertEquals("微信", decoded.recurring.single().paymentMethod)
+        assertEquals("income", JSONObject(encoded).getJSONArray("recurring").getJSONObject(0).getString("type"))
+
+        seed(expected)
+        BackupManager.restore(app, db, decoded)
+        assertEquals(expected.recurring, db.dao().getAllRecurringOnce())
+        assertSnapshotsEqual(expected, BackupManager.capture(app, db))
+    }
+
+    @Test
+    fun schemaSevenBackupsWithoutRecurringTypeDecodeAsExpenseButSchemaEightRequiresIt() {
+        val expected = snapshot()
+        val encoded = BackupManager.encode(expected)
+        val missing = JSONObject(encoded).apply { getJSONArray("recurring").getJSONObject(0).remove("type") }
+
+        val legacy = JSONObject(missing.toString()).put("schemaVersion", 7)
+        assertEquals(TransactionType.EXPENSE, BackupManager.decode(legacy.toString()).recurring.single().type)
+        assertEquals(expected, BackupManager.decode(legacy.toString()))
+
+        assertTrue(runCatching { BackupManager.decode(missing.put("schemaVersion", 8).toString()) }.isFailure)
+    }
+
     private fun snapshot() = BackupSnapshot(
         records = listOf(
             ExpenseRecord(11, 1234, day, 1_700_000_000_000, "餐饮", "晚餐,\"朋友\"\n第二行", paymentMethod = "微信"),
