@@ -119,6 +119,10 @@ class UiLayoutTest {
         recurringBarFillsTheRecordFormAndLinksTheSavedRecord()
         closeActivity()
         recurringBarFitsDarkModeAndDoubleFontScale()
+        closeActivity()
+        templateBarSitsAboveAmountOnNewExpense()
+        closeActivity()
+        templateBarFitsDarkModeAndDoubleFontScale()
     }
 
     private fun categoryDragScrollsToOffscreenItems() {
@@ -734,6 +738,29 @@ class UiLayoutTest {
             amountValue() == "1" &&
                 textNode("已带入周期规则：改好金额后保存，这笔会记到本月的该规则上") != null
         }
+    }
+
+    private fun templateBarSitsAboveAmountOnNewExpense() {
+        openApp()
+        await("新增支出应显示快捷模板条") { textNode("快捷模板") != null }
+        val templateTop = textNode("快捷模板")!!.boundsInRoot.top
+        val amountTop = amountField().boundsInRoot.top
+        assertTrue("快捷模板条应排在金额输入框上方，模板=$templateTop 金额=$amountTop", templateTop < amountTop)
+        assertControlLayout("＋ 存为模板")
+        screenshot("record-template-bar-top-light")
+
+        assertTrue("应能切到收入类型", clickNode("收入")!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("切到收入后快捷模板条应消失") { textNode("快捷模板") == null }
+    }
+
+    private fun templateBarFitsDarkModeAndDoubleFontScale() {
+        openApp(darkTheme = true, scale = 2f)
+        await("200% 字号下新增支出应显示快捷模板条") { textNode("快捷模板") != null }
+        val templateTop = textNode("快捷模板")!!.boundsInRoot.top
+        val amountTop = amountField().boundsInRoot.top
+        assertTrue("200% 字号下快捷模板条仍应排在金额上方", templateTop < amountTop)
+        assertControlLayout("＋ 存为模板")
+        screenshot("record-template-bar-top-dark-font-200")
     }
 
     private fun scrollRecordFormUntilVisible(label: String) {

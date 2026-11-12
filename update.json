@@ -1,5 +1,5 @@
 {
-  "version": "0.12.2",
-  "notes": "周期记账规则现在会像快捷模板一样显示在「记一笔」页面：点一下带入金额、分类、账户，可改金额后保存，这笔会自动挂到该规则上，列表随即显示「本月已记」。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.12.2/apk/latest.apk"
+  "version": "0.12.3",
+  "notes": "「记一笔」页面把每天都要用的快捷模板条移到了金额输入上方，打开即见、无需滚动；一个月才用一次的周期记账条保留在表单下部。两条快捷条的显示条件、带入字段与关联规则均未改变。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.12.3/apk/latest.apk"
 }

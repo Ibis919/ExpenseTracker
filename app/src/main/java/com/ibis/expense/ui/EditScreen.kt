@@ -165,6 +165,14 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp)) {
+            if (initial == null && type == TransactionType.EXPENSE) {
+                TemplateBar(templates, emoji, amountCents != null && effectiveCategory != null && !saving,
+                    onUse = { t -> if (!saving) {
+                        amount = centsToInput(t.amountCents); selectedCategory = t.category; note = t.note; paymentMethod = t.paymentMethod
+                    } }, onDelete = { if (!saving) deleteTemplateTarget = it },
+                    onSave = { vm.saveTemplate(amountCents!!, effectiveCategory!!, note, paymentMethod) })
+                Spacer(Modifier.height(16.dp))
+            }
             OutlinedTextField(value = amount, onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } },
                 enabled = !saving, modifier = Modifier.fillMaxWidth(), label = { Text("金额（元）") },
                 textStyle = MaterialTheme.typography.headlineMedium.copy(textAlign = TextAlign.Center, fontWeight = FontWeight.Bold),
@@ -270,14 +278,6 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
                         type = r.type
                         selectedRuleId = r.id
                     }
-                }
-                if (type == TransactionType.EXPENSE) {
-                    Spacer(Modifier.height(20.dp))
-                    TemplateBar(templates, emoji, amountCents != null && effectiveCategory != null && !saving,
-                        onUse = { t -> if (!saving) {
-                            amount = centsToInput(t.amountCents); selectedCategory = t.category; note = t.note; paymentMethod = t.paymentMethod
-                        } }, onDelete = { if (!saving) deleteTemplateTarget = it },
-                        onSave = { vm.saveTemplate(amountCents!!, effectiveCategory!!, note, paymentMethod) })
                 }
             }
             if (initial != null) {
