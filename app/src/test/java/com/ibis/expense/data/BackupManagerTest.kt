@@ -395,6 +395,47 @@ class BackupManagerTest {
     }
 
     @Test
+    fun templateOrderSurvivesEncodeDecodeRestoreAndCapture() = runBlocking {
+        val expected = snapshot().let { it.copy(
+            templates = listOf(
+                RecordTemplate(41, 1234, "餐饮", "快捷晚餐", paymentMethod = "微信", sortOrder = 1),
+                RecordTemplate(42, 2200, "娱乐", "首充", sortOrder = 2)
+            )
+        ) }
+
+        seed(expected)
+        val encoded = BackupManager.encode(expected)
+        assertEquals(1, JSONObject(encoded).getJSONArray("templates").getJSONObject(0).getInt("sortOrder"))
+        val decoded = BackupManager.decode(encoded)
+
+        assertEquals(expected, decoded)
+        // Id order (41, 42) matches sortOrder order (1, 2), so this assertion only passes
+        // through `ORDER BY sortOrder ASC`; the legacy `ORDER BY id DESC` would yield [42, 41].
+        assertEquals(listOf(41L, 42L), decoded.templates.sortedBy { it.sortOrder }.map { it.id })
+
+        BackupManager.restore(app, db, decoded)
+        assertEquals("还原后模板顺序应按 sortOrder 持久化", listOf(41L, 42L), db.dao().getAllTemplatesOnce().map { it.id })
+        assertSnapshotsEqual(expected, BackupManager.capture(app, db))
+    }
+
+    @Test
+    fun legacySchemaFiveToEightPayloadsDecodeTemplatesWithZeroSortOrder() {
+        val source = BackupManager.encode(snapshot())
+        for (schema in 5..8) {
+            val legacy = JSONObject(source).apply {
+                put("schemaVersion", schema)
+                getJSONArray("templates").getJSONObject(0).remove("sortOrder")
+            }
+            assertEquals(0, BackupManager.decode(legacy.toString()).templates.single().sortOrder)
+        }
+        assertEquals(0, BackupManager.decode(source).templates.single().sortOrder)
+        val ordered = JSONObject(source).apply {
+            getJSONArray("templates").getJSONObject(0).put("sortOrder", 5)
+        }
+        assertEquals(5, BackupManager.decode(ordered.toString()).templates.single().sortOrder)
+    }
+
+    @Test
     fun schemaSevenBackupsWithoutRecurringTypeDecodeAsExpenseButSchemaEightRequiresIt() {
         val expected = snapshot()
         val encoded = BackupManager.encode(expected)

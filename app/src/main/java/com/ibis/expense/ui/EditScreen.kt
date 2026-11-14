@@ -6,8 +6,15 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -18,9 +25,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -47,28 +56,52 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.ibis.expense.data.RecordTemplate
 import com.ibis.expense.data.RecurringExpense
 import com.ibis.expense.data.ExpenseRecord
 import com.ibis.expense.data.TransactionType
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val MILLIS_PER_DAY = 86_400_000L
 
@@ -170,7 +203,8 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
                     onUse = { t -> if (!saving) {
                         amount = centsToInput(t.amountCents); selectedCategory = t.category; note = t.note; paymentMethod = t.paymentMethod
                     } }, onDelete = { if (!saving) deleteTemplateTarget = it },
-                    onSave = { vm.saveTemplate(amountCents!!, effectiveCategory!!, note, paymentMethod) })
+                    onSave = { vm.saveTemplate(amountCents!!, effectiveCategory!!, note, paymentMethod) },
+                    onReorder = { ids -> vm.reorderTemplates(ids) })
                 Spacer(Modifier.height(16.dp))
             }
             OutlinedTextField(value = amount, onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } },
@@ -270,7 +304,7 @@ fun EditScreen(vm: AppViewModel, initial: UiRecord?, onDone: () -> Unit, onBusyC
             if (initial == null && (type == TransactionType.EXPENSE || type == TransactionType.INCOME)) {
                 if (recurringRules.isNotEmpty()) {
                     Spacer(Modifier.height(20.dp))
-                    RecurringBar(recurringRules, recurringRecorded, selectedRuleId, !saving) { r ->
+                    RecurringBar(recurringRules, emoji, recurringRecorded, selectedRuleId, !saving) { r ->
                         amount = centsToInput(r.amountCents)
                         selectedCategory = r.category
                         note = r.note
@@ -365,40 +399,250 @@ private fun TemplateBar(
     canSave: Boolean,
     onUse: (RecordTemplate) -> Unit,
     onDelete: (RecordTemplate) -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    onReorder: suspend (List<Long>) -> Result<Unit>
 ) {
+    val ordered = remember(templates) { templates.toMutableStateList() }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val context = LocalContext.current
+    var draggedId by remember { mutableStateOf<Long?>(null) }
+    var dragStartX by remember { mutableFloatStateOf(0f) }
+    var dragGrabX by remember { mutableFloatStateOf(0f) }
+    var dragDistance by remember { mutableFloatStateOf(0f) }
+    var beforeDrag by remember { mutableStateOf<List<RecordTemplate>>(emptyList()) }
+    var reordering by remember { mutableStateOf(false) }
+    var barRect by remember { mutableStateOf(Rect.Zero) }
+    var dropRect by remember { mutableStateOf(Rect.Zero) }
+    val overDrop = remember { derivedStateOf {
+        if (draggedId == null) false
+        else dropRect.contains(Offset(barRect.left + dragStartX + dragDistance, barRect.center.y))
+    } }
+
+    fun move(id: Long, target: Int): Boolean {
+        val from = ordered.indexOfFirst { it.id == id }
+        if (reordering || from < 0 || target !in ordered.indices || from == target) return false
+        ordered.add(target, ordered.removeAt(from))
+        return true
+    }
+
+    fun moveBy(id: Long, amount: Int): Boolean {
+        val from = ordered.indexOfFirst { it.id == id }
+        return from >= 0 && move(id, from + amount)
+    }
+
+    fun moveUnderPointer() {
+        val id = draggedId ?: return
+        val visible = listState.layoutInfo.visibleItemsInfo.filter { it.key is Long }
+        if (visible.isEmpty()) return
+        val center = dragStartX + dragDistance
+        // 落在两个 chip 之间的 8dp 间隙时取最近的 chip，避免直接跳到最右端。
+        val target = visible.firstOrNull { center >= it.offset && center < it.offset + it.size }
+            ?: visible.minByOrNull { kotlin.math.abs(it.offset + it.size / 2f - center) }
+            ?: return
+        val targetId = target.key as? Long ?: return
+        move(id, ordered.indexOfFirst { it.id == targetId })
+    }
+
+    fun restoreBeforeDrag() {
+        ordered.clear()
+        ordered.addAll(beforeDrag)
+    }
+
+    fun startDrag(id: Long, startPos: Offset) {
+        if (draggedId != null || reordering) return
+        val item = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == id } ?: return
+        beforeDrag = ordered.toList()
+        draggedId = id
+        dragStartX = item.offset + startPos.x
+        dragGrabX = startPos.x
+        dragDistance = 0f
+        try {
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        } catch (e: Exception) {
+            // Haptics are unavailable in some environments (e.g. Robolectric); dragging must still work.
+        }
+    }
+
+    fun finishDragCancelled() {
+        if (draggedId != null) restoreBeforeDrag()
+        draggedId = null
+        dragDistance = 0f
+        dragGrabX = 0f
+    }
+
+    fun commitOrder() {
+        val ids = ordered.map { it.id }
+        if (reordering || ids == beforeDrag.map { it.id }) return
+        reordering = true
+        scope.launch {
+            try {
+                onReorder(ids).onFailure { e ->
+                    restoreBeforeDrag()
+                    Toast.makeText(context, e.message ?: "模板排序保存失败", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                restoreBeforeDrag()
+                Toast.makeText(context, e.message ?: "模板排序保存失败", Toast.LENGTH_SHORT).show()
+            } finally { reordering = false }
+        }
+    }
+
+    fun moveAndCommit(id: Long, amount: Int): Boolean {
+        if (draggedId != null || reordering) return false
+        val from = ordered.indexOfFirst { it.id == id }
+        if (from < 0 || from + amount !in ordered.indices) return false
+        beforeDrag = ordered.toList()
+        moveBy(id, amount)
+        commitOrder()
+        return true
+    }
+
+    fun dropTemplate(id: Long) {
+        if (draggedId != id) return
+        val center = Offset(barRect.left + dragStartX + dragDistance, barRect.center.y)
+        val hitDrop = overDrop.value
+        draggedId = null
+        dragDistance = 0f
+        dragGrabX = 0f
+        if (hitDrop) {
+            restoreBeforeDrag()
+            ordered.firstOrNull { it.id == id }?.let { onDelete(it) }
+            return
+        }
+        if (center.x < barRect.left || center.x > barRect.right) { restoreBeforeDrag(); return }
+        commitOrder()
+    }
+
     Column {
         Text("快捷模板", style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(8.dp))
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            items(templates, key = { it.id }) { t ->
-                val label = buildString {
-                    append(categoryEmoji(t.category, emoji))
-                    append(' ')
-                    append("¥${formatAmount(t.amountCents)} · ${t.paymentMethod.ifBlank { "未关联" }}")
-                    append(" · ${t.note.lineSequence().firstOrNull()?.take(16)?.ifBlank { t.category } ?: t.category}")
+        Box(
+            modifier = Modifier.fillMaxWidth()
+                .onGloballyPositioned {
+                    val pos = it.positionInRoot()
+                    barRect = Rect(
+                        Offset(pos.x.toFloat(), pos.y.toFloat()),
+                        Offset((pos.x + it.size.width).toFloat(), (pos.y + it.size.height).toFloat()),
+                    )
                 }
-                TemplateChip(
-                    label = label,
-                    onClick = { onUse(t) },
-                    onLongClick = { onDelete(t) }
-                )
+        ) {
+            LazyRow(
+                state = listState,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(ordered, key = { it.id }) { t ->
+                    val isDragging = draggedId == t.id
+                    val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == t.id }
+                    val dragTranslationX = if (isDragging && itemInfo != null)
+                        dragStartX + dragDistance - dragGrabX - itemInfo.offset else 0f
+                    val displayNote = t.note.lineSequence().firstOrNull()?.trim().orEmpty().ifBlank { t.category }.take(12)
+                    val label = categoryEmoji(t.category, emoji) + " " + displayNote
+                    val index = ordered.indexOfFirst { it.id == t.id }
+                    TemplateChip(
+                        label = label,
+                        dragging = isDragging,
+                        modifier = Modifier
+                            .zIndex(if (isDragging) 1f else 0f)
+                            .graphicsLayer { translationX = dragTranslationX }
+                            .animateItem()
+                            .semantics(mergeDescendants = true) {
+                                role = Role.Button
+                                contentDescription = "快捷模板 $label，点按填入，长按可拖动排序"
+                                if (isDragging) stateDescription = "正在拖动"
+                                onClick(label = "填入模板") { onUse(t); true }
+                                customActions = buildList {
+                                    if (index > 0) add(CustomAccessibilityAction("上移一位") { moveAndCommit(t.id, -1) })
+                                    if (index < ordered.lastIndex) add(CustomAccessibilityAction("下移一位") { moveAndCommit(t.id, 1) })
+                                    add(CustomAccessibilityAction("删除") { onDelete(t); true })
+                                }
+                            }
+                            .testTag("template-chip-${t.id}")
+                            .pointerInput(t.id) {
+                                // 点按填入 与 长按拖动排序 由这一个手势检测器裁决（与 CategoryReorderScreen 同一写法）。
+                                // 不能再让 chip 自己挂 clickable：那个点击节点在本 pointerInput 内侧，会先消费 DOWN，
+                                // 令长按永不成立。拖动中会消费位移事件，因此拖动不会带动外层表单滚动。
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    var finishedBeforeLongPress = false
+                                    val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                                        waitForUpOrCancellation().also { finishedBeforeLongPress = true }
+                                    }
+                                    if (finishedBeforeLongPress) {
+                                        if (up != null) {
+                                            up.consume()
+                                            onUse(t)
+                                        }
+                                    } else {
+                                        startDrag(t.id, down.position)
+                                        if (draggedId == t.id) {
+                                            try {
+                                                val completed = drag(down.id) { change ->
+                                                    dragDistance += change.positionChange().x
+                                                    change.consume()
+                                                    moveUnderPointer()
+                                                }
+                                                if (completed) dropTemplate(t.id) else finishDragCancelled()
+                                            } catch (e: CancellationException) {
+                                                finishDragCancelled()
+                                                throw e
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                    )
+                }
+                item(key = "save") {
+                    TemplateChip(
+                        label = "＋ 存为模板",
+                        enabled = canSave,
+                        modifier = Modifier.animateItem(),
+                        onClick = onSave
+                    )
+                }
             }
-            item(key = "save") {
-                TemplateChip(
-                    label = "＋ 存为模板",
-                    enabled = canSave,
-                    onClick = onSave
-                )
+            if (draggedId != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .size(76.dp, 52.dp)
+                        .onGloballyPositioned {
+                            val pos = it.positionInRoot()
+                            dropRect = Rect(
+                                Offset(pos.x.toFloat(), pos.y.toFloat()),
+                                Offset((pos.x + it.size.width).toFloat(), (pos.y + it.size.height).toFloat()),
+                            )
+                        }
+                        .background(
+                            if (overDrop.value) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            RoundedCornerShape(12.dp)
+                        )
+                        .border(
+                            2.dp,
+                            if (overDrop.value) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant,
+                            RoundedCornerShape(12.dp)
+                        )
+                        .semantics(mergeDescendants = true) { contentDescription = "拖到此处删除模板" },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "🗑 删除",
+                        color = if (overDrop.value) MaterialTheme.colorScheme.onErrorContainer
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
         if (templates.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))
             Text(
-                "点按填入 · 长按删除",
+                "点按填入 · 长按拖动排序 · 拖到右侧删除",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -416,6 +660,7 @@ private fun TemplateBar(
 @Composable
 private fun RecurringBar(
     rules: List<RecurringExpense>,
+    emoji: Map<String, String>,
     recorded: Set<Long>,
     selectedRuleId: Long,
     enabled: Boolean,
@@ -431,12 +676,10 @@ private fun RecurringBar(
             items(rules, key = { it.id }) { r ->
                 val income = r.type == TransactionType.INCOME
                 val label = buildString {
-                    append(r.note.lineSequence().firstOrNull()?.take(16)?.ifBlank { r.category } ?: r.category)
+                    append(if (income) "💰" else categoryEmoji(r.category, emoji))
                     append(' ')
-                    append(if (income) "＋¥${formatAmount(r.amountCents)}" else "¥${formatAmount(r.amountCents)}")
-                    append(" · ")
-                    append(r.paymentMethod.ifBlank { "未关联" })
-                    if (r.id in recorded) append(" · 本月已记")
+                    append(r.note.lineSequence().firstOrNull()?.trim().orEmpty().ifBlank { r.category }.take(12))
+                    if (r.id in recorded) append(" ✓")
                 }
                 TemplateChip(
                     label = label,
@@ -461,19 +704,20 @@ private fun TemplateChip(
     label: String,
     enabled: Boolean = true,
     selected: Boolean = false,
-    onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null
+    dragging: Boolean = false,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
 ) {
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
         contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
-        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null,
-        modifier = Modifier.combinedClickable(
-            enabled = enabled,
-            onClick = onClick,
-            onLongClick = onLongClick
-        )
+        border = if (selected || dragging) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null,
+        shadowElevation = if (dragging) 8.dp else 0.dp,
+        // 快捷模板 chip 传 onClick = null：点按与长按拖动都由 TemplateBar 里那一个 pointerInput 处理。
+        // 以前这里挂 Modifier.clickable，产生的点击节点位于 pointerInput 内侧、会先消费 DOWN，
+        // 长按因此永远不成立、模板拖不动。
+        modifier = if (onClick == null) modifier else modifier.clickable(enabled = enabled, onClick = onClick)
     ) {
         Text(
             label,
@@ -488,3 +732,4 @@ private fun TemplateChip(
         )
     }
 }
+

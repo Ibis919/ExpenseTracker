@@ -1,5 +1,5 @@
 {
-  "version": "0.12.3",
-  "notes": "「记一笔」页面把每天都要用的快捷模板条移到了金额输入上方，打开即见、无需滚动；一个月才用一次的周期记账条保留在表单下部。两条快捷条的显示条件、带入字段与关联规则均未改变。",
-  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.12.3/apk/latest.apk"
+  "version": "0.12.4",
+  "notes": "快捷模板和周期记账条改成「分类图标 + 备注」的紧凑样式，一屏能看到更多；快捷模板支持长按拖动排序（跟手动画），松手即保存顺序，拖到右侧可删除。",
+  "apkUrl": "https://gcore.jsdelivr.net/gh/Ibis919/ExpenseTracker@v0.12.4/apk/latest.apk"
 }

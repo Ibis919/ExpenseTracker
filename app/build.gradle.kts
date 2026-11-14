@@ -20,8 +20,8 @@ android {
         applicationId = "com.ibis.expense"
         minSdk = 26
         targetSdk = 34
-        versionCode = 30
-        versionName = "0.12.3"
+        versionCode = 31
+        versionName = "0.12.4"
     }
 
     signingConfigs {

@@ -357,6 +357,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    suspend fun reorderTemplates(orderedIds: List<Long>): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            db.withTransaction {
+                val currentIds = dao.getAllTemplatesOnce().map { it.id }
+                require(orderedIds.size == currentIds.size && orderedIds.toSet() == currentIds.toSet()) {
+                    "模板列表已发生变化，请返回后重试。"
+                }
+                orderedIds.forEachIndexed { index, id ->
+                    check(dao.updateTemplateSort(id, index + 1) == 1) {
+                        "模板列表已发生变化，请返回后重试。"
+                    }
+                }
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun renameCategory(oldName: String, newName: String, emoji: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val trimmed = newName.trim()

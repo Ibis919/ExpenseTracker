@@ -14,6 +14,8 @@ import com.ibis.expense.data.MIGRATION_4_5
 import com.ibis.expense.data.MIGRATION_5_6
 import com.ibis.expense.data.MIGRATION_6_7
 import com.ibis.expense.data.MIGRATION_7_8
+import com.ibis.expense.data.MIGRATION_8_9
+import com.ibis.expense.data.RecordTemplate
 import com.ibis.expense.data.RecurringExpense
 import com.ibis.expense.data.TransactionType
 import java.io.File
@@ -337,7 +339,7 @@ class AppViewModelTest {
             old.version = 4
         }
         val migrated = Room.databaseBuilder(app, ExpenseDatabase::class.java, name)
-            .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build()
+            .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build()
         try {
             val record = migrated.dao().getAllOnce().single { it.id == 1L }
             assertEquals("旧账", record.note)
@@ -350,10 +352,57 @@ class AppViewModelTest {
             assertEquals(YearMonth.now().toString(), migrated.dao().getAllRecurringOnce().single().lastGeneratedMonth)
             assertEquals(TransactionType.EXPENSE, migrated.dao().getAllRecurringOnce().single().type)
             assertEquals("", migrated.dao().getAllTemplatesOnce().single().paymentMethod)
+            assertEquals(0, migrated.dao().getAllTemplatesOnce().single().sortOrder)
         } finally {
             migrated.close()
             app.deleteDatabase(name)
         }
+    }
+
+    @Test
+    fun reorderTemplatesPersistsTheDraggedOrder() = runBlocking {
+        db.dao().insertTemplate(RecordTemplate(0, 1_000, "餐饮", "早午饭", ""))
+        db.dao().insertTemplate(RecordTemplate(0, 2_000, "娱乐", "游戏", ""))
+        db.dao().insertTemplate(RecordTemplate(0, 3_000, "交通", "地铁", ""))
+        val ids = db.dao().getAllTemplatesOnce().map { it.id }
+        assertEquals(3, ids.size)
+        val first = ids[0]
+        val second = ids[1]
+        val third = ids[2]
+
+        vm.reorderTemplates(listOf(third, first, second)).getOrThrow()
+
+        assertEquals(
+            listOf(third, first, second),
+            db.dao().getAllTemplatesOnce().map { it.id }
+        )
+
+        // A template saved afterwards keeps sortOrder 0 and still lands leftmost.
+        db.dao().insertTemplate(RecordTemplate(0, 4_000, "购物", "日用品", ""))
+        val freshId = db.dao().getAllTemplatesOnce().first { it.category == "购物" }.id
+        assertEquals(
+            listOf(freshId, third, first, second),
+            db.dao().getAllTemplatesOnce().map { it.id }
+        )
+        assertEquals(0, db.dao().getAllTemplatesOnce().first { it.id == freshId }.sortOrder)
+        assertEquals(1, db.dao().getAllTemplatesOnce().first { it.id == third }.sortOrder)
+    }
+
+    @Test
+    fun reorderTemplatesRejectsMismatchedIdSets() = runBlocking {
+        db.dao().insertTemplate(RecordTemplate(0, 1_000, "餐饮", "早午饭", ""))
+        db.dao().insertTemplate(RecordTemplate(0, 2_000, "娱乐", "游戏", ""))
+        val ids = db.dao().getAllTemplatesOnce().map { it.id }
+
+        // A bogus id swapped in must fail and leave stored order untouched.
+        val bogus = vm.reorderTemplates(listOf(ids[0], ids[1], ids[0] + 999L))
+        assertTrue("混入不存在的模板 id 应失败", bogus.isFailure)
+        assertEquals(ids, db.dao().getAllTemplatesOnce().map { it.id })
+
+        // A wrong-size list must fail as well.
+        val wrongSize = vm.reorderTemplates(listOf(ids[0]))
+        assertTrue("模板数量不一致应失败", wrongSize.isFailure)
+        assertEquals(ids, db.dao().getAllTemplatesOnce().map { it.id })
     }
 
     @Test

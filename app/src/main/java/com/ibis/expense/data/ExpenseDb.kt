@@ -66,7 +66,8 @@ data class RecordTemplate(
     val amountCents: Long,
     val category: String,
     val note: String,
-    val paymentMethod: String = ""
+    val paymentMethod: String = "",
+    val sortOrder: Int = 0
 )
 
 data class CategoryTotal(
@@ -196,10 +197,13 @@ interface ExpenseDao {
     @Query("UPDATE templates SET category = :newName WHERE category = :oldName")
     suspend fun reassignTemplatesCategory(oldName: String, newName: String)
 
-    @Query("SELECT * FROM templates ORDER BY id DESC")
+    @Query("UPDATE templates SET sortOrder = :sortOrder WHERE id = :id")
+    suspend fun updateTemplateSort(id: Long, sortOrder: Int): Int
+
+    @Query("SELECT * FROM templates ORDER BY sortOrder ASC, id DESC")
     fun observeTemplates(): Flow<List<RecordTemplate>>
 
-    @Query("SELECT * FROM templates")
+    @Query("SELECT * FROM templates ORDER BY sortOrder ASC, id DESC")
     suspend fun getAllTemplatesOnce(): List<RecordTemplate>
 
     @Query("DELETE FROM templates")
@@ -306,9 +310,15 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
     }
 }
 
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE templates ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
 @Database(
     entities = [ExpenseRecord::class, RecurringExpense::class, Category::class, RecordTemplate::class, AccountBalance::class],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class ExpenseDatabase : RoomDatabase() {
@@ -317,7 +327,7 @@ abstract class ExpenseDatabase : RoomDatabase() {
     companion object {
         fun build(context: Context): ExpenseDatabase =
             Room.databaseBuilder(context, ExpenseDatabase::class.java, "expenses.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         db.execSQL(SEED_CATEGORIES)

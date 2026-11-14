@@ -40,6 +40,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -123,6 +124,14 @@ class UiLayoutTest {
         templateBarSitsAboveAmountOnNewExpense()
         closeActivity()
         templateBarFitsDarkModeAndDoubleFontScale()
+        closeActivity()
+        templateDragReordersAndCompactChipsRenderEmojiAndNote()
+        closeActivity()
+        templateDragToDeleteZoneRemovesTemplate()
+        closeActivity()
+        templateChipAccessibilityActionsMoveAndDelete()
+        closeActivity()
+        templateBarCompactChipsFitDarkModeAndDoubleFontScale()
     }
 
     private fun categoryDragScrollsToOffscreenItems() {
@@ -679,8 +688,8 @@ class UiLayoutTest {
         val expenseId = runBlocking {
             vm.saveRecurring(null, 250_000, 0, "娱乐", "房租", PaymentMethod.WECHAT).getOrThrow()
         }
-        val incomeChip = "工资 ＋¥1200.00 · 支付宝"
-        val expenseChip = "房租 ¥2500.00 · 微信"
+        val incomeChip = "💰 工资"
+        val expenseChip = "🎮 房租"
         val selectedHint = "已带入周期规则：改好金额后保存，这笔会记到本月的该规则上"
 
         await("记一笔页应显示周期记账快捷条") { textNode("🔁 周期记账") != null }
@@ -724,7 +733,7 @@ class UiLayoutTest {
         runBlocking {
             vm.saveRecurring(null, 100, 0, "收入", "工", PaymentMethod.WECHAT, TransactionType.INCOME).getOrThrow()
         }
-        val chip = "工 ＋¥1.00 · 微信"
+        val chip = "💰 工"
 
         await("200% 字号下记一笔应显示周期记账快捷条") { textNode("🔁 周期记账") != null }
         scrollRecordFormUntilVisible(chip)
@@ -747,6 +756,7 @@ class UiLayoutTest {
         val amountTop = amountField().boundsInRoot.top
         assertTrue("快捷模板条应排在金额输入框上方，模板=$templateTop 金额=$amountTop", templateTop < amountTop)
         assertControlLayout("＋ 存为模板")
+        assertNotNull("应显示模板空状态提示", textNode("填好金额和分类后点「存为模板」，下次一键带入"))
         screenshot("record-template-bar-top-light")
 
         assertTrue("应能切到收入类型", clickNode("收入")!!.config[SemanticsActions.OnClick].action!!.invoke())
@@ -760,7 +770,214 @@ class UiLayoutTest {
         val amountTop = amountField().boundsInRoot.top
         assertTrue("200% 字号下快捷模板条仍应排在金额上方", templateTop < amountTop)
         assertControlLayout("＋ 存为模板")
+        assertNotNull("应显示模板空状态提示", textNode("填好金额和分类后点「存为模板」，下次一键带入"))
         screenshot("record-template-bar-top-dark-font-200")
+    }
+
+    private fun templateDragReordersAndCompactChipsRenderEmojiAndNote() {
+        openApp()
+        runBlocking {
+            vm.saveTemplate(1_000, "餐饮", "早午饭")
+            vm.saveTemplate(2_000, "娱乐", "游戏")
+        }
+        await("模板应出现在记一笔页") { vm.templatesState.value.size == 2 }
+        await("模板条应显示快捷模板标题与提示") {
+            textNode("快捷模板") != null && textNode("点按填入 · 长按拖动排序 · 拖到右侧删除") != null
+        }
+
+        await("模板 chip 只显示 emoji 与备注") {
+            clickNode("🍜 早午饭") != null && clickNode("🎮 游戏") != null
+        }
+        val chipText = clickNode("🍜 早午饭")!!.config[SemanticsProperties.Text].joinToString("") { it.text }
+        assertEquals("模板 chip 只应显示 emoji 与备注首行", "🍜 早午饭", chipText)
+        assertTrue("模板 chip 不应出现金额符号", nodes().none { it.text().contains("¥") })
+        assertControlLayout("🍜 早午饭")
+        screenshot("record-template-bar-light")
+
+        val ids = vm.templatesState.value.map { it.id }
+        dragTemplateTo(ids[0], ids[1])
+        await("拖动后持久化顺序应交换") { vm.templatesState.value.map { it.id } == listOf(ids[1], ids[0]) }
+        await("拖动后界面顺序应交换") {
+            clickNode("🎮 游戏") != null && clickNode("🍜 早午饭") != null
+        }
+        screenshot("record-template-bar-after-drag")
+
+        // Restore the original order so later scenarios start from a clean state.
+        runBlocking { vm.reorderTemplates(ids).getOrThrow() }
+        await("恢复模板顺序") { vm.templatesState.value.map { it.id } == ids }
+    }
+
+    private fun templateBarCompactChipsFitDarkModeAndDoubleFontScale() {
+        openApp(darkTheme = true, scale = 2f)
+        runBlocking {
+            vm.saveTemplate(1_000, "餐饮", "早午饭")
+            vm.saveTemplate(2_000, "娱乐", "游戏")
+        }
+        await("200% 字号下模板应显示为紧凑 chip") {
+            clickNode("🍜 早午饭") != null && clickNode("🎮 游戏") != null
+        }
+        // LazyRow 在 200% 字号下必然横向溢出：逐个滚到可见区再验证尺寸，不能直接读屏外节点的 bounds。
+        val templateRow = nodes(merged = false).firstOrNull {
+            it.config.getOrNull(SemanticsActions.ScrollBy)?.action != null &&
+                it.config.getOrNull(SemanticsProperties.HorizontalScrollAxisRange) != null
+        } ?: throw AssertionError("模板条应可横向滚动")
+        fun reveal(chip: String) {
+            templateRow.config[SemanticsActions.ScrollBy].action!!.invoke(-2000f, 0f)
+            repeat(6) { frame() }
+            repeat(30) {
+                val n = clickNode(chip)
+                val b = n?.boundsInRoot
+                if (n != null && b != null && b.width + 1f >= n.size.width && b.left >= 0f && b.right <= 360f) return
+                templateRow.config[SemanticsActions.ScrollBy].action!!.invoke(100f, 0f)
+                repeat(3) { frame() }
+            }
+            throw AssertionError("无法把 $chip 滚动到可见区域")
+        }
+        for (chip in listOf("🍜 早午饭", "🎮 游戏", "＋ 存为模板")) {
+            reveal(chip)
+            val bounds = clickNode(chip)!!.boundsInRoot
+            val clipped = nodes().any { node ->
+                node.text().contains(chip) && (node.boundsInRoot.left < 0f || node.boundsInRoot.right > 360f)
+            }
+            assertFalse("200% 字号下 $chip 不应被裁剪，bounds=$bounds", clipped)
+            assertTrue("200% 字号下 $chip 触点不应小于48dp，bounds=$bounds",
+                bounds.width >= 48f && bounds.height >= 48f)
+            assertControlLayout(chip)
+        }
+        assertNotNull("应显示拖动提示", textNode("点按填入 · 长按拖动排序 · 拖到右侧删除"))
+        screenshot("record-template-bar-dark-font-200")
+    }
+
+    private fun dragTemplateTo(sourceId: Long, targetId: Long) {
+        val source = taggedNode("template-chip-$sourceId") ?: throw AssertionError("缺少模板 chip $sourceId")
+        val target = taggedNode("template-chip-$targetId") ?: throw AssertionError("缺少目标模板 chip $targetId")
+        val origin = IntArray(2)
+        composeView()!!.getLocationInWindow(origin)
+        val startX = origin[0] + source.boundsInRoot.center.x
+        val startY = origin[1] + source.boundsInRoot.center.y
+        val endX = origin[0] + target.boundsInRoot.center.x
+        val downTime = SystemClock.uptimeMillis()
+        fun dispatch(action: Int, x: Float) {
+            val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, x, startY, 0)
+            try {
+                assertTrue("拖动事件 $action 应由模板条处理 (x=$x startX=$startX startY=$startY)", controller.get().dispatchTouchEvent(event))
+            } finally { event.recycle() }
+        }
+        dispatch(MotionEvent.ACTION_DOWN, startX)
+        // 长按必须确定性地超时：直接推进 Robolectric 时钟（等同 Compose 的 mainClock.advanceTimeBy），
+        // 而不是依赖 ~32 个 vsync 帧累积到 500ms。共享 looper 上堆了几十个已销毁的 Activity 后，
+        // 单帧耗时变长，靠帧数等待会在 10s 断言期限边缘抖动。
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+        frame()
+        await("长按应进入模板拖动状态") {
+            taggedNode("template-chip-$sourceId")?.config?.getOrNull(SemanticsProperties.StateDescription) == "正在拖动"
+        }
+        repeat(6) { step ->
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(16))
+            dispatch(MotionEvent.ACTION_MOVE, startX + (endX - startX) * (step + 1) / 6f)
+            frame()
+        }
+        dispatch(MotionEvent.ACTION_UP, endX)
+        repeat(6) { frame() }
+    }
+
+    private fun templateDragToDeleteZoneRemovesTemplate() {
+        openApp()
+        runBlocking {
+            vm.saveTemplate(1_000, "餐饮", "早午饭")
+            vm.saveTemplate(2_000, "娱乐", "游戏")
+        }
+        await("模板应出现在记一笔页") { vm.templatesState.value.size == 2 }
+        // 模板 chip 的 pointerInput 节点要等 LazyRow 子组合完成挂载后才会启动，
+        // 只等 templatesState 会抢在挂载前派发 DOWN，长按手势永远不会开始。
+        await("模板条应显示快捷模板标题与提示") {
+            textNode("快捷模板") != null && textNode("点按填入 · 长按拖动排序 · 拖到右侧删除") != null
+        }
+        await("模板 chip 只显示 emoji 与备注") {
+            clickNode("🍜 早午饭") != null && clickNode("🎮 游戏") != null
+        }
+        val ids = vm.templatesState.value.map { it.id }
+        dragTemplateToDeleteZone(ids[0])
+
+        await("拖到删除落点应弹出删除模板确认框") { textNode("删除模板", dialogDecor()) != null }
+        assertTrue("确认框应提供删除按钮",
+            clickNode("删除", dialogDecor()) != null)
+        assertTrue(clickNode("删除", dialogDecor())!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("确认后模板应被删除") { vm.templatesState.value.map { it.id } == listOf(ids[1]) }
+        await("删除后模板条应只剩另一个模板与存为模板入口") {
+            taggedNode("template-chip-${ids[0]}") == null &&
+                taggedNode("template-chip-${ids[1]}") != null &&
+                clickNode("＋ 存为模板") != null && textNode("快捷模板") != null
+        }
+    }
+
+    private fun dragTemplateToDeleteZone(sourceId: Long) {
+        val source = taggedNode("template-chip-$sourceId") ?: throw AssertionError("缺少模板 chip $sourceId")
+        val origin = IntArray(2)
+        composeView()!!.getLocationInWindow(origin)
+        val startX = origin[0] + source.boundsInRoot.center.x
+        val startY = origin[1] + source.boundsInRoot.center.y
+        val downTime = SystemClock.uptimeMillis()
+        fun dispatch(action: Int, x: Float) {
+            val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, x, startY, 0)
+            try {
+                assertTrue("拖动事件 $action 应由模板条处理 (x=$x startX=$startX startY=$startY)", controller.get().dispatchTouchEvent(event))
+            } finally { event.recycle() }
+        }
+        dispatch(MotionEvent.ACTION_DOWN, startX)
+        // 长按必须确定性地超时：直接推进 Robolectric 时钟（等同 Compose 的 mainClock.advanceTimeBy），
+        // 而不是依赖 ~32 个 vsync 帧累积到 500ms。共享 looper 上堆了几十个已销毁的 Activity 后，
+        // 单帧耗时变长，靠帧数等待会在 10s 断言期限边缘抖动。
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+        frame()
+        await("长按应进入模板拖动状态") {
+            taggedNode("template-chip-$sourceId")?.config?.getOrNull(SemanticsProperties.StateDescription) == "正在拖动"
+        }
+        // The delete drop target only mounts once the drag is active.
+        val drop = awaitValue("拖动时应出现拖到此处删除模板落点") {
+            val node = nodes().firstOrNull { node ->
+                node.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty().any { it == "拖到此处删除模板" }
+                    && node.boundsInRoot.width > 0f
+            }
+            node
+        }
+        val endX = origin[0] + drop.boundsInRoot.center.x
+        repeat(6) { step ->
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(16))
+            dispatch(MotionEvent.ACTION_MOVE, startX + (endX - startX) * (step + 1) / 6f)
+            frame()
+        }
+        await("拖到删除落点应仍保持拖动状态") {
+            taggedNode("template-chip-$sourceId")?.config?.getOrNull(SemanticsProperties.StateDescription) == "正在拖动"
+        }
+        dispatch(MotionEvent.ACTION_UP, endX)
+        repeat(6) { frame() }
+    }
+
+    private fun templateChipAccessibilityActionsMoveAndDelete() {
+        openApp()
+        runBlocking {
+            vm.saveTemplate(1_000, "餐饮", "早午饭")
+            vm.saveTemplate(2_000, "娱乐", "游戏")
+        }
+        await("模板应出现在记一笔页") { vm.templatesState.value.size == 2 }
+        val ids = vm.templatesState.value.map { it.id }
+
+        val chip = taggedNode("template-chip-${ids[0]}") ?: throw AssertionError("缺少模板 chip ${ids[0]}")
+        val actions = chip.config.getOrNull(SemanticsActions.CustomActions).orEmpty().map { it.label }
+        assertEquals("首个模板 chip 应提供下移一位与删除自定义操作", listOf("下移一位", "删除"), actions)
+        val moveDown = chip.config[SemanticsActions.CustomActions].first { it.label == "下移一位" }.action
+        assertTrue("下移一位应成功", moveDown())
+        await("自定义操作下移后顺序应交换并持久化") {
+            vm.templatesState.value.map { it.id } == listOf(ids[1], ids[0])
+        }
+
+        val movedChip = taggedNode("template-chip-${ids[0]}") ?: throw AssertionError("缺少模板 chip ${ids[0]}")
+        val deleteAction = movedChip.config[SemanticsActions.CustomActions].first { it.label == "删除" }.action
+        assertTrue("删除自定义操作应成功", deleteAction())
+        await("删除自定义操作应弹出删除模板确认框") { textNode("删除模板", dialogDecor()) != null }
+        assertTrue(clickNode("删除", dialogDecor())!!.config[SemanticsActions.OnClick].action!!.invoke())
+        await("确认后模板应被删除") { vm.templatesState.value.map { it.id } == listOf(ids[1]) }
     }
 
     private fun scrollRecordFormUntilVisible(label: String) {
@@ -815,9 +1032,11 @@ class UiLayoutTest {
     }
 
     private fun showPaymentSpendingLedger() {
-        await("测试账本记录应写入数据库") { vm.allRecords.value.size == 4 }
         vm.acknowledgeSavedRecord()
         assertTrue(clickNode("账本")?.config?.getOrNull(SemanticsActions.OnClick)?.action?.invoke() == true)
+        // 先切到账本页再等数据：allRecords 是 stateIn(WhileSubscribed)，只有账本页的
+        // 组合在收集它；在「记一笔」页空等会在订阅空档里一直读到空列表。
+        await("测试账本记录应写入数据库") { vm.allRecords.value.size == 4 }
         await("切到账本后应显示两种支付渠道金额") {
             nodes().any { "微信 ¥46.90" in it.text() } &&
                 nodes().any { "支付宝 ¥69.12" in it.text() }
@@ -1009,6 +1228,17 @@ class UiLayoutTest {
         while (System.nanoTime() < deadline) {
             frame()
             if (condition()) return
+            Thread.sleep(10)
+        }
+        throw AssertionError("$message\n" + nodes().joinToString("\n") { "${it.id}: ${it.text()} ${it.boundsInRoot}" })
+    }
+
+    /** Same as [await] but polls until the condition yields a value, and returns it. */
+    private fun <T : Any> awaitValue(message: String, condition: () -> T?): T {
+        val deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos()
+        while (System.nanoTime() < deadline) {
+            frame()
+            condition()?.let { return it }
             Thread.sleep(10)
         }
         throw AssertionError("$message\n" + nodes().joinToString("\n") { "${it.id}: ${it.text()} ${it.boundsInRoot}" })

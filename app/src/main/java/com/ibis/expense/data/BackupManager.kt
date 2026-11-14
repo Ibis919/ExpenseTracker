@@ -32,7 +32,7 @@ object BackupManager {
     private const val KEY_BUDGET_CENTS = "budget_cents"
     private const val DEFAULT_BUDGET_CENTS = 60000L
     private const val FORMAT_VERSION = 1
-    private const val SCHEMA_VERSION = 8
+    private const val SCHEMA_VERSION = 9
     private const val MAX_AMOUNT_CENTS = 999999999L
     private const val KEEP = 7
     private val methods = setOf("微信", "支付宝")
@@ -108,6 +108,7 @@ object BackupManager {
                     put("category", template.category)
                     put("note", template.note)
                     put("paymentMethod", template.paymentMethod)
+                    put("sortOrder", template.sortOrder)
                 }) }
             })
         }.toString(2)
@@ -159,7 +160,8 @@ object BackupManager {
                 templates = root.objects("templates") { template ->
                     RecordTemplate(template.long("id"), template.long("amountCents"),
                         template.string("category"), template.string("note"),
-                        if (schema >= 6) template.string("paymentMethod") else "")
+                        if (schema >= 6) template.string("paymentMethod") else "",
+                        if (schema >= 9) template.int("sortOrder") else 0)
                 },
                 budgetCents = root.long("budgetCents"),
                 createdAt = root.long("createdAt")
